@@ -21,7 +21,7 @@ from pathlib import Path
 from .constants import (
     RESULTS_DIR, COLOR_BG_MAIN, COLOR_BG_PANEL, COLOR_BG_INPUT,
     COLOR_TEXT_MAIN, COLOR_TEXT_SUB, COLOR_ACCENT, COLOR_OK, COLOR_NG, COLOR_WARNING,
-    FONT_BOLD, FONT_LARGE, FONT_HUGE, FONT_NORMAL, FONT_FAMILY
+    FONT_BOLD, FONT_LARGE, FONT_HUGE, FONT_NORMAL, FONT_FAMILY, VERSION
 )
 from .hardware import DigitalInputDevice, OutputDevice, is_gpio_available, MockManager
 from .settings import SettingsManager
@@ -330,7 +330,7 @@ class InspectionSystem:
     # ------------------------------------------------------------------
     def setup_gui(self):
         self.root = tk.Tk()
-        self.root.title("自動検査システム")
+        self.root.title(f"自動検査システム {VERSION}")
         self.root.geometry("1400x900")
         self.root.configure(bg=COLOR_BG_MAIN)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)

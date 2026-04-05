@@ -7,6 +7,9 @@ constants.py - フォント・カラー・パス定数
 import os
 from pathlib import Path
 
+# --- バージョン ---
+VERSION = "v3.3.0"
+
 # --- ファイル・パス ---
 SETTINGS_FILE = "inspection_settings.json"
 RESULTS_DIR = Path(os.path.expanduser("~")) / "results"
