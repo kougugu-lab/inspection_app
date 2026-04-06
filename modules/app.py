@@ -726,41 +726,34 @@ class InspectionSystem:
                         ret, frame = cap.retrieve()
                         if ret:
                             self.last_frames[cid] = frame  # Numpy配列は新規生成されるためcopy不要（負荷削減）
-                            preview_res = self.settings.data["storage"].get(
-                                "preview_res", "320x240")
-                            if preview_res == "プレビューなし":
-                                continue
-                            try:
-                                pw, ph = map(int, preview_res.split('x'))
-                            except Exception:
-                                pw, ph = 320, 240
-                                
-                            # cv2.INTER_LINEAR の方が低解像度プレビューでのジャギーが減り、RasPiでも十分高速
-                            img = cv2.resize(frame, (pw, ph),
-                                            interpolation=cv2.INTER_LINEAR)
-                            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                            pil_img = Image.fromarray(img)
-
-                            # 結果表示時間が残っている場合は、結果画像を優先表示
-                            if time.time() < self.result_display_until:
-                                if cid in self.result_display_frames:
-                                    def _upd_res(c=cid, p_img=self.result_display_frames[cid]):
-                                        if c in self.cam_labels:
-                                            tk_img = ImageTk.PhotoImage(p_img)
-                                            self.cam_labels[c].config(image=tk_img)
-                                            self.cam_labels[c].img = tk_img
-                                    self.root.after(0, _upd_res)
-                                    continue
-
                             # Tkinterのイベントキュー詰まりによるカクつきを防止
+                            # (描画が追いつかない場合は、重いリサイズ・色変換・PIL変換そのものをスキップする)
                             if not getattr(self.cam_labels.get(cid), 'is_updating', False):
                                 self.cam_labels[cid].is_updating = True
-                                def _upd_live(c=cid, p_img=pil_img):
+                                
+                                def _upd_live(c=cid, f_data=frame):
                                     if c in self.cam_labels:
-                                        tk_img = ImageTk.PhotoImage(p_img)
-                                        self.cam_labels[c].config(image=tk_img)
-                                        self.cam_labels[c].img = tk_img
-                                        self.cam_labels[c].is_updating = False
+                                        try:
+                                            # 重い処理をルートスレッド（Tkinter）側に逃がさず、
+                                            # かといって描画キューが詰まらないように制限をかける
+                                            preview_res = self.settings.data["storage"].get("preview_res", "320x240")
+                                            if preview_res != "プレビューなし":
+                                                try:
+                                                    pw, ph = map(int, preview_res.split('x'))
+                                                except Exception:
+                                                    pw, ph = 320, 240
+                                                
+                                                img = cv2.resize(f_data, (pw, ph), interpolation=cv2.INTER_LINEAR)
+                                                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                                                pil_img = Image.fromarray(img)
+                                                
+                                                tk_img = ImageTk.PhotoImage(pil_img)
+                                                self.cam_labels[c].config(image=tk_img)
+                                                self.cam_labels[c].img = tk_img
+                                        except Exception: pass
+                                        finally:
+                                            self.cam_labels[c].is_updating = False
+
                                 self.root.after(0, _upd_live)
                 except Exception as e:
                     self.logger.error(f"Preview error (cid={cid}): {e}")
