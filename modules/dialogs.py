@@ -12,6 +12,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import threading
 import numpy as np
+from pathlib import Path
 
 import cv2
 from PIL import Image, ImageTk
@@ -27,7 +28,6 @@ if __name__ == "__main__" or __package__ is None:
 from .constants import (
     COLOR_BG_MAIN, COLOR_BG_PANEL, COLOR_BG_INPUT,
     COLOR_TEXT_MAIN, COLOR_TEXT_SUB, COLOR_ACCENT, COLOR_OK, COLOR_NG, COLOR_NG_MUTED, COLOR_WARNING,
-    COLOR_HIGHLIGHT,
     FONT_FAMILY, FONT_NORMAL, FONT_BOLD, FONT_LARGE,
     FONT_SET_TAB, FONT_SET_LBL, FONT_SET_VAL, FONT_BTN_LARGE,
     RES_OPTIONS, RES_OPTIONS_PREVIEW, RES_OPTIONS_SAVE,
@@ -500,6 +500,8 @@ class SettingsDialog(tk.Toplevel):
         lbl = tk.Label(test_win, bg="black")
         lbl.pack(fill=tk.BOTH, expand=True)
         cap = cv2.VideoCapture(c_idx)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not cap.isOpened():
             messagebox.showerror("エラー", f"カメラ (インデックス: {c_idx}) を開けませんでした。")
             test_win.destroy()
