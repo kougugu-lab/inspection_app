@@ -31,9 +31,18 @@ from .dialogs import SettingsDialog
 try:
     import pygame
     PYGAME_AVAILABLE = True
-    pygame.mixer.init()
+    # pygame.mixer.init() は起動時に行わず、初回使用時に遅延初期化する
 except ImportError:
     PYGAME_AVAILABLE = False
+
+
+def _ensure_mixer():
+    """pygame.mixerを初回使用時に遅延初期化する (起動時間短縮)"""
+    if PYGAME_AVAILABLE and not pygame.mixer.get_init():
+        try:
+            pygame.mixer.init()
+        except Exception:
+            pass
 
 try:
     from ultralytics import YOLO
@@ -292,7 +301,9 @@ class InspectionSystem:
             self.outputs = {"ok": self.out_ok, "ng": self.out_ng}
 
             cap_res = data["storage"]["capture_res"]
-            for c in data["cameras"]:
+
+            def _open_camera(c, cap_res):
+                """カメラを並列で開く (起動時間短縮)"""
                 try:
                     backend = cv2.CAP_V4L2 if sys.platform.startswith('linux') else cv2.CAP_ANY
                     cap = cv2.VideoCapture(int(c["index"]), backend)
@@ -302,13 +313,21 @@ class InspectionSystem:
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                         cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
                         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-                        self.caps[c["id"]] = cap
+                        with self.camera_lock:
+                            self.caps[c["id"]] = cap
+                        self.logger.info(f"カメラ(インデックス {c['index']})を初期化しました: {c['name']}")
                     else:
                         self.logger.error(f"カメラ(インデックス {c['index']})を開けませんでした")
-                        continue
-                    self.logger.info(f"カメラ(インデックス {c['index']})を初期化しました: {c['name']}")
                 except Exception as e:
                     self.logger.error(f"カメラ初期化エラー (インデックス {c['index']}): {e}")
+
+            # 複数カメラを並列オープン
+            cam_threads = [threading.Thread(target=_open_camera, args=(c, cap_res), daemon=True)
+                           for c in data["cameras"]]
+            for t in cam_threads:
+                t.start()
+            for t in cam_threads:
+                t.join(timeout=5.0)  # 最大5秒待機
         except Exception as e:
             self.logger.error(f"ハードウェアエラー: {e}")
 
@@ -1147,6 +1166,7 @@ class InspectionSystem:
             bp = inference_cfg.get("buzzer_path", "")
             if bp and PYGAME_AVAILABLE and os.path.exists(bp):
                 try:
+                    _ensure_mixer()
                     pygame.mixer.music.load(bp)
                     pygame.mixer.music.play(-1)
                 except: pass
@@ -1166,6 +1186,7 @@ class InspectionSystem:
                 ok_bp = inference_cfg.get("ok_buzzer_path", "")
                 if ok_bp and PYGAME_AVAILABLE and os.path.exists(ok_bp):
                     try:
+                        _ensure_mixer()
                         pygame.mixer.music.load(ok_bp)
                         pygame.mixer.music.play(0)
                     except: pass
