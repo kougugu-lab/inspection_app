@@ -13,6 +13,7 @@ import queue
 import os
 import sys
 import random
+import csv
 import tkinter as tk
 from tkinter import messagebox
 from PIL import Image, ImageTk
@@ -650,7 +651,7 @@ class InspectionSystem:
         """NG出力・ブザーを停止する"""
         if self.out_ng:
             self.out_ng.off()
-        if PYGAME_AVAILABLE:
+        if PYGAME_AVAILABLE and pygame.mixer.get_init():
             pygame.mixer.music.stop()
 
     def clear_history(self):
@@ -835,14 +836,21 @@ class InspectionSystem:
         today = datetime.datetime.now().strftime('%Y%m%d')
         now_time = datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')
         res_dir = self.get_results_dir()
-        csv_file = res_dir / "csv" / f"inspection_results_{today}.csv"
+        csv_dir = res_dir / "csv"
+        csv_dir.mkdir(parents=True, exist_ok=True) # ディレクトリ作成を確実に
+        csv_file = csv_dir / f"inspection_results_{today}.csv"
         
         file_exists = csv_file.exists()
+        header = ["日時", "コミット番号", "パターン名", "カメラ名", "判定対象クラス名", "検出個数", "判定結果", "信頼度"]
+        data = [now_time, f"{self.commit_number:04d}", pattern_name, camera_name, class_name, detected_count, res_type, f"{confidence:.2f}"]
+        
         try:
-            with open(csv_file, 'a', encoding='utf-8-sig') as f:
+            # newline='' は csvモジュールの推奨設定 (OSごとの改行不整合を防ぐ)
+            with open(csv_file, 'a', encoding='utf-8-sig', newline='') as f:
+                writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
                 if not file_exists:
-                    f.write("日時,コミット番号,パターン名,カメラ名,判定対象クラス名,検出個数,判定結果,信頼度\n")
-                f.write(f"{now_time},{self.commit_number:04d},{pattern_name},{camera_name},{class_name},{detected_count},{res_type},{confidence:.2f}\n")
+                    writer.writerow(header)
+                writer.writerow(data)
         except Exception as e:
             self.logger.error(f"CSV書き込みエラー: {e}")
 
@@ -1054,7 +1062,7 @@ class InspectionSystem:
             self.cycle_active_pat_id = self.get_current_pattern()
             self.cycle_fired_trigs = set()
             self.cycle_trig_idx = 0 # 念のため
-            self.logger.info(f"--- サイクル開始 (パターン: {self.cycle_active_pat_id or 'SKIP'}) ---")
+            # ログ出力はパターンの名前が確定した後で行う
 
         # 固定されたパターンを使用
         pat_id = self.cycle_active_pat_id
@@ -1079,6 +1087,10 @@ class InspectionSystem:
             if not required_trig_ids:
                 # 全てのトリガーが条件なしの場合、少なくとも自分自身で完了する
                 required_trig_ids = {trig_id}
+
+        # 1つ目のトリガーの場合のみ開始ログ（名前解決後）
+        if len(self.cycle_fired_trigs) == 0:
+            self.logger.info(f"--- サイクル開始 (パターン: {pat_name}) ---")
 
         self.v_pat_name.set(pat_name)
         self.cycle_fired_trigs.add(trig_id)
@@ -1134,15 +1146,27 @@ class InspectionSystem:
             self.result_display_until = time.time() + display_time
 
         # --- サイクル完了判定 ---
-        # 全トリガーを消化したか、またはパターンに設定されたトリガーを全て消化したらサイクル終了
-        if required_trig_ids.issubset(self.cycle_fired_trigs):
+        # 1. パターンに設定された「必要なトリガー」を全て消化した場合
+        # 2. または、ハードウェア設定されている全トリガーの順序を一周した場合 (物理的なワークの入れ替わり)
+        is_cycle_complete = required_trig_ids.issubset(self.cycle_fired_trigs)
+        
+        # ハードウェアトリガーが1つの場合は常に完了とみなす
+        if len(trig_list) <= 1:
+            is_cycle_complete = True
+        # 最後のトリガーを終えてインデックスが0に戻った場合も強制完了 (シーケンスの同期)
+        elif self.cycle_trig_idx == 0:
+            is_cycle_complete = True
+
+        if is_cycle_complete:
             self.logger.info(f"--- サイクル完了 (#{self.commit_number:04d}) ---")
             self.adjust_commit(1)    # ここで初めて次の番号へ
             self.cycle_active_pat_id = None
             self.cycle_fired_trigs.clear()
-            self.cycle_trig_idx = 0  # インデックスリセット
+            self.cycle_trig_idx = 0  # 念のためリセット
         else:
-            self.logger.info(f"サイクル継続中 (進捗: {len(self.cycle_fired_trigs)}/{len(required_trig_ids)})")
+            next_trig_id = trig_list[self.cycle_trig_idx]
+            next_trig_name = next((t["name"] for t in d["gpio"]["triggers"] if t["id"] == next_trig_id), str(next_trig_id))
+            self.logger.info(f"サイクル継続中 (進捗: {len(self.cycle_fired_trigs)}/{len(required_trig_ids)}, 次待機: {next_trig_name})")
 
         # --- 出灯 / ブザー制御 (検査モードのみ) ---
         if mode != "inspection":

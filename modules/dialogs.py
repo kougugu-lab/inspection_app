@@ -295,10 +295,11 @@ class SettingsDialog(tk.Toplevel):
         # Combobox のドロップダウンリストのフォントを大きく設定
         self.option_add("*TCombobox*Listbox.font", FONT_SET_VAL)
 
-        # Linux/Raspberry Pi でのフォーカス・クリック不良回避のため、完全描画を待ってから grab_set
-        self.wait_visibility()
-        self.grab_set()
-        self.focus_set()
+        # Linux/Raspberry Pi (Wayland) でのフォーカス・クリック不良回避のための修正
+        self.lift()
+        self.focus_force()
+        # 画面の描画とOS側への登録が完了するのを待ってから入力を独占する (遅延が重要)
+        self.after(200, self.grab_set)
 
     def on_cancel(self):
         """キャンセル時やウィンドウを閉じた際もプレビュー再開を保証する"""

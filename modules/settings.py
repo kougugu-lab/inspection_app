@@ -50,7 +50,7 @@ class SettingsManager:
                 "buzzer_path": "",
                 "mode": "inspection",
                 "save_skip_in_record": False,
-                "preview_fps": 0.5,
+                "preview_fps": 2,
                 "ok_output_time": 0.5,
                 "ng_output_time": ""
             },

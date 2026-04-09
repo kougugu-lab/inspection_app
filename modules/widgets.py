@@ -157,7 +157,9 @@ class TenKeyDialog(tk.Toplevel):
         self.geometry("350x550")
         self.configure(bg=COLOR_BG_MAIN)
         self.transient(parent)
-        self.grab_set()
+        self.lift()
+        self.focus_force()
+        self.after(200, self.grab_set)
 
         self.var_value = tk.StringVar(value=str(initial_value))
 
