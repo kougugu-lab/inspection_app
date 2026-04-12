@@ -421,8 +421,10 @@ class InspectionSystem:
         main.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
 
         # カメラプレビュー
+        # pack_propagate(False) により、プレビュー画像のサイズに引っ張られてカメラエリアが膨張するのを抑止する
         self.v_frm_outer, v_frm_inner = create_card(main, "カメラプレビュー")
         self.v_frm_outer.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.v_frm_outer.pack_propagate(False)
         self.cam_labels = {}
 
         self.v_frm = tk.Frame(v_frm_inner, bg=COLOR_BG_PANEL)
@@ -490,9 +492,14 @@ class InspectionSystem:
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.lb_history.config(yscrollcommand=sb.set)
 
-        tk.Button(pnl, text="履歴リセット", font=FONT_NORMAL, bg="#546E7A",
+        hist_btn_frm = tk.Frame(pnl, bg=COLOR_BG_PANEL)
+        hist_btn_frm.pack(fill=tk.X, padx=10, pady=5)
+        tk.Button(hist_btn_frm, text="履歴リセット", font=FONT_NORMAL, bg="#546E7A",
                   fg="white", relief="flat",
-                  command=self.clear_history).pack(fill=tk.X, padx=10, pady=5)
+                  command=self.clear_history).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(hist_btn_frm, text="結果フォルダ", font=FONT_NORMAL, bg="#546E7A",
+                  fg="white", relief="flat",
+                  command=self.open_results_folder).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
         tk.Button(pnl, text="ブザー停止", font=FONT_BOLD, bg=COLOR_NG,
                   fg="white", height=2, relief="flat",
@@ -658,6 +665,23 @@ class InspectionSystem:
         if messagebox.askyesno("確認", "NG履歴を削除しますか？"):
             self.ng_history.clear()
             self.lb_history.delete(0, tk.END)
+
+    def open_results_folder(self):
+        """結果画像フォルダをOSのファイルマネージャーで開く"""
+        folder = self.get_results_dir() / "images"
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(folder))
+            elif sys.platform.startswith("linux"):
+                import subprocess
+                subprocess.Popen(["xdg-open", str(folder)])
+            else:
+                import subprocess
+                subprocess.Popen(["open", str(folder)])
+        except Exception as e:
+            self.logger.error(f"結果フォルダを開けませんでした: {e}")
+            messagebox.showerror("エラー", f"フォルダを開けませんでした:\n{folder}", parent=self.root)
 
     def on_history_double_click(self, e):
         s = self.lb_history.curselection()
