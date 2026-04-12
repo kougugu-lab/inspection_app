@@ -690,23 +690,93 @@ class InspectionSystem:
         rec = self.ng_history[len(self.ng_history) - 1 - s[0]]
         res_dir = self.get_results_dir()
         dir_ng = res_dir / "images" / "NG"
-        imgs = list(dir_ng.glob(f"NG_{rec['commit']:04d}_*"))
+
+        # 同コミット番号の全ファイルを対象に絞り込む
+        all_imgs = sorted(dir_ng.glob(f"NG_{rec['commit']:04d}_*"))
+
+        # NG発生時刻が記録されていれば、同じ日付のファイルのみに絞る
+        rec_time = rec.get("time")
+        if rec_time is not None:
+            rec_date = rec_time.date()
+            imgs = [
+                f for f in all_imgs
+                if datetime.datetime.fromtimestamp(f.stat().st_mtime).date() == rec_date
+            ]
+            # フィルタ後が0件（日をまたいだ保存等）のときは全件表示
+            if not imgs:
+                imgs = all_imgs
+        else:
+            imgs = all_imgs
+
         if not imgs:
+            messagebox.showinfo("情報", f"#{rec['commit']:04d} の画像ファイルが見つかりません。\n保存先: {dir_ng}")
             return
+
+        # ---- スクロール対応の大きな画像ビューワー ----
         top = tk.Toplevel(self.root)
-        top.title(f"NG詳細 #{rec['commit']:04d}")
+        top.title(f"NG詳細 #{rec['commit']:04d} ({len(imgs)}枚)")
         top.configure(bg=COLOR_BG_MAIN)
+        top.transient(self.root)
+
+        # ウィンドウサイズを画面の85%に設定
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        win_w = int(sw * 0.85)
+        win_h = int(sh * 0.85)
+        top.geometry(f"{win_w}x{win_h}")
+
+        # タイトルラベル
+        tk.Label(top, text=f"NG #{rec['commit']:04d} — {len(imgs)}枚", font=FONT_LARGE,
+                 bg=COLOR_BG_MAIN, fg=COLOR_NG).pack(pady=(10, 0))
+
+        # スクロール可能フレーム
+        frame_outer = tk.Frame(top, bg=COLOR_BG_MAIN)
+        frame_outer.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        canvas_scroll = tk.Canvas(frame_outer, bg=COLOR_BG_MAIN, highlightthickness=0)
+        scrollbar = tk.Scrollbar(frame_outer, orient=tk.VERTICAL, command=canvas_scroll.yview)
+        canvas_scroll.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas_scroll.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        inner = tk.Frame(canvas_scroll, bg=COLOR_BG_MAIN)
+        canvas_scroll.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_configure(event):
+            canvas_scroll.configure(scrollregion=canvas_scroll.bbox("all"))
+        inner.bind("<Configure>", _on_inner_configure)
+
+        # マウスホイールでスクロール
+        def _on_mousewheel(event):
+            canvas_scroll.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas_scroll.bind_all("<MouseWheel>", _on_mousewheel)
+        top.bind("<Destroy>", lambda e: canvas_scroll.unbind_all("<MouseWheel>"))
+
+        # 画像を縦に並べて表示
+        img_max_w = int(win_w * 0.82)
+        img_max_h = int(sh * 0.65)
+
         for f in imgs:
             try:
                 im = Image.open(f)
-                im.thumbnail((500, 500))
+                im.thumbnail((img_max_w, img_max_h), Image.LANCZOS)
                 t_im = ImageTk.PhotoImage(im)
-                l = tk.Label(top, image=t_im, text=f.name, compound="bottom",
-                             bg=COLOR_BG_MAIN, fg=COLOR_TEXT_MAIN, font=FONT_NORMAL)
-                l.image = t_im
-                l.pack(side=tk.LEFT, padx=5, pady=5)
-            except Exception:
-                pass
+
+                # ファイル名ラベル
+                tk.Label(inner, text=f.name, font=FONT_NORMAL,
+                         bg=COLOR_BG_MAIN, fg=COLOR_TEXT_SUB).pack(anchor="w", padx=10, pady=(10, 2))
+                # 画像ラベル
+                lbl = tk.Label(inner, image=t_im, bg=COLOR_BG_MAIN)
+                lbl.image = t_im  # 参照保持
+                lbl.pack(padx=10, pady=(0, 5))
+            except Exception as ex:
+                self.logger.error(f"NG画像読み込みエラー: {f.name} - {ex}")
+
+        # 閉じるボタン
+        tk.Button(top, text="閉じる", font=FONT_BOLD, bg="#546E7A", fg="white",
+                  relief="flat", padx=20,
+                  command=top.destroy).pack(pady=10)
 
     def show_main_help(self):
         help_data = {
@@ -1258,7 +1328,8 @@ class InspectionSystem:
     def add_history(self, trig_id):
         now = datetime.datetime.now()
         t_str = now.strftime("%m/%d %H:%M:%S")
-        self.ng_history.append({"commit": self.commit_number, "trigger": trig_id})
+        # 'time' を記録しておくことで、同一コミット番号でも今回のセッションの画像のみ特定できる
+        self.ng_history.append({"commit": self.commit_number, "trigger": trig_id, "time": now})
         self.lb_history.insert(0, f"[{t_str}] #{self.commit_number:04d} NG")
 
     def _main_logic_loop(self):
