@@ -8,11 +8,12 @@ import os
 from pathlib import Path
 
 # --- バージョン ---
-VERSION = "v3.3.3"
+VERSION = "v3.3.4"
 
 # --- ファイル・パス ---
 SETTINGS_FILE = "inspection_settings.json"
 RESULTS_DIR = Path(os.path.expanduser("~")) / "results"
+RESULTS_SUBDIR_NG_RAW = "NG_RAW"
 
 # --- 有効なBCMピン番号 (Raspberry Pi 40ピンヘッダ) ---
 VALID_BCM_PINS = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,

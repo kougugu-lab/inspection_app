@@ -20,7 +20,7 @@ from PIL import Image, ImageTk
 from pathlib import Path
 
 from .constants import (
-    RESULTS_DIR, COLOR_BG_MAIN, COLOR_BG_PANEL, COLOR_BG_INPUT,
+    RESULTS_DIR, RESULTS_SUBDIR_NG_RAW, COLOR_BG_MAIN, COLOR_BG_PANEL, COLOR_BG_INPUT,
     COLOR_TEXT_MAIN, COLOR_TEXT_SUB, COLOR_ACCENT, COLOR_OK, COLOR_NG, COLOR_WARNING,
     FONT_BOLD, FONT_LARGE, FONT_HUGE, FONT_NORMAL, FONT_FAMILY, VERSION
 )
@@ -889,6 +889,9 @@ class InspectionSystem:
         # 設定から解像度を取得してリサイズ
         if result_type == "REC":
             res_key = "res_record"
+        elif result_type == "NG_RAW":
+            # NG_RAW は NG と同じ解像度設定を使う
+            res_key = "res_ng"
         else:
             res_key = f"res_{result_type.lower()}"
         res_setting = self.settings.data["storage"].get(res_key, "640x480")
@@ -1118,7 +1121,7 @@ class InspectionSystem:
                     shot_results.append(res_type)
                     
                     if (cid, cam_name) not in final_best_frames or res_type == "OK":
-                         final_best_frames[(cid, cam_name)] = (frame_to_save, res_type, confidence, cond_summary, det_summary)
+                         final_best_frames[(cid, cam_name)] = (frame_to_save, frame, res_type, confidence, cond_summary, det_summary)
 
             if shot_results:
                 results = shot_results
@@ -1214,12 +1217,15 @@ class InspectionSystem:
             self.update_status("撮影モード 待機中", COLOR_ACCENT)
         elif mode == "inspection":
             display_frames = {}
-            for (cid, cam_name), (frame, res_type, conf, cls_name, det_cnt) in final_best_frames.items():
+            for (cid, cam_name), (frame, raw_frame, res_type, conf, cls_name, det_cnt) in final_best_frames.items():
                 self.logger.info(f"判定結果: カメラ={cam_name}, 条件={cls_name}, 検出数={det_cnt}, 結果={res_type}, 信頼度={conf:.2f}")
                 res_setting = d["storage"].get(f"res_{res_type.lower()}", "640x480")
                 if res_setting != "保存しない":
                     self.save_result_images(res_type, frame, cam_name, pat_name, 
                                             confidence=conf, trig_name=trig_name)
+                    if res_type == "NG":
+                        self.save_result_images(RESULTS_SUBDIR_NG_RAW, raw_frame, cam_name, pat_name,
+                                                confidence=conf, trig_name=trig_name)
                 self.append_to_csv(pat_name, cam_name, cls_name, det_cnt, res_type, conf)
 
                 if res_type == "NG":
