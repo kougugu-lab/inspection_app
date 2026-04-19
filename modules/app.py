@@ -229,6 +229,21 @@ class InspectionSystem:
             self.model = YOLO(model_path)
             fmt = "ncnn" if path_obj.is_dir() or str(model_path).endswith(".ncnn") else "pt"
             self.logger.info(f"YOLOモデルをロードしました ({fmt}): {model_path}")
+
+            # --- ウォームアップ推論 ---
+            # YOLOは初回 predict() 時に内部グラフのJITコンパイルが走るため
+            # 起動後すぐにバックグラウンドでダミー推論を行い、初回検査の遅延を解消する
+            import numpy as np
+            def _warmup(model=self.model):
+                try:
+                    import numpy as np
+                    dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+                    model.predict(dummy, verbose=False)
+                    self.logger.info("YOLOモデルのウォームアップ完了")
+                except Exception:
+                    pass  # ウォームアップ失敗は無視（実際の推論には影響しない）
+            threading.Thread(target=_warmup, daemon=True).start()
+
         except Exception as e:
             self.logger.error(f"YOLOモデルのロードに失敗しました: {e}")
 
