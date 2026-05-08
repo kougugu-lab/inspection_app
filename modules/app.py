@@ -1290,10 +1290,13 @@ class InspectionSystem:
         ok_time = inference_cfg.get("ok_output_time", 0.5)
         ng_time = inference_cfg.get("ng_output_time", "")
         has_ng = "NG" in results
+        # 要件: GPIOは総合判定結果のみを出力し、NG専用出力は使用しない
+        # 残留を防ぐため、毎サイクル先頭でNG出力を必ずOFFにする
+        if self.out_ng:
+            self.out_ng.off()
 
         if has_ng:
             self.update_status(f"NG検出 ({pat_name})", COLOR_NG)
-            if self.out_ng: self.out_ng.on()
             try:
                 ng_sec = float(ng_time)
                 ng_msec = int(ng_sec * 1000)
