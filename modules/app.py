@@ -1290,13 +1290,14 @@ class InspectionSystem:
         ok_time = inference_cfg.get("ok_output_time", 0.5)
         ng_time = inference_cfg.get("ng_output_time", "")
         has_ng = "NG" in results
-        # 要件: GPIOは総合判定結果のみを出力し、NG専用出力は使用しない
-        # 残留を防ぐため、毎サイクル先頭でNG出力を必ずOFFにする
-        if self.out_ng:
-            self.out_ng.off()
+        # NG専用ラインは判定結果では駆動しない（OK出力のみで総合結果を通知）
+        # 注意: 検査のたびに out_ng.off() を呼ぶと、NGピンとパターン選択入力が同一BCMの
+        # 誤設定時にピンが出力駆動され、次サイクル以降 get_current_pattern() が常に不一致→SKIPとなる
 
         if has_ng:
             self.update_status(f"NG検出 ({pat_name})", COLOR_NG)
+            if self.out_ng:
+                self.out_ng.on()
             try:
                 ng_sec = float(ng_time)
                 ng_msec = int(ng_sec * 1000)
@@ -1361,16 +1362,6 @@ class InspectionSystem:
             try:
                 trig_id = self.trigger_queue.get(timeout=1.0)
                 self.process_inspection(trig_id)
-                # --- 追加修正: キューのフラッシュ ---
-                # 撮影モードや保存処理中にチャタリングや信号の重なりで溜まった
-                # 古いトリガーイベントをすべて破棄する
-                if not self.trigger_queue.empty():
-                    self.logger.info("処理中に発生した余剰なトリガーをスキップします")
-                    while not self.trigger_queue.empty():
-                        try:
-                            self.trigger_queue.get_nowait()
-                        except queue.Empty:
-                            break
                 # ----------------------------------
             except queue.Empty:
                 pass

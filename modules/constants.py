@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 # --- バージョン ---
-VERSION = "v3.3.5"
+VERSION = "v3.3.6"
 
 # --- ファイル・パス ---
 SETTINGS_FILE = "inspection_settings.json"
