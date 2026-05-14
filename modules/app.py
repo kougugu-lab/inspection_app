@@ -1269,7 +1269,8 @@ class InspectionSystem:
         if len(trig_list) <= 1:
             is_cycle_complete = True
         # 最後のトリガーを終えてインデックスが0に戻った場合も強制完了 (シーケンスの同期)
-        elif self.cycle_trig_idx == 0:
+        # ただし、現在のサイクルで既に複数のトリガーが実行されている場合のみ
+        elif len(trig_list) > 1 and self.cycle_trig_idx == 0 and len(self.cycle_fired_trigs) > 1:
             is_cycle_complete = True
 
         if is_cycle_complete:
