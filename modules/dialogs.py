@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 dialogs.py - ダイアログウィンドウ
-  GPIOTestDialog, SettingsDialog
+GPIOTestDialog, SettingsDialog
 """
 
 import json
@@ -1688,77 +1688,55 @@ class SettingsDialog(tk.Toplevel):
     # ---- 保存 / GPIO テスト ----
 
     def validate_pins(self):
-        """BCMピンのバリデーション（有効範囲＋トリガー/パターン切替/OK/NG出力間の重複禁止）"""
+        """ピン番号のバリデーション（重複チェック＋有効BCMピンチェック）"""
         used_pins = {}
-
-        # 保存直前に UI の出力ピン変数を temp_data へ反映（このメソッド単体でも正しく検証できるようにする）
-        try:
-            if hasattr(self, "v_ok") and hasattr(self, "v_ng"):
-                self.temp_data["gpio"]["outputs"]["ok"] = self.v_ok.get()
-                self.temp_data["gpio"]["outputs"]["ng"] = self.v_ng.get()
-        except tk.TclError:
-            messagebox.showerror("バリデーションエラー",
-                                 "OK/NG 出力のピン番号には整数を入力してください。", parent=self)
-            return False
-
         def _get_val(v):
             """str/intを確実にintに変換。無効なら-1を返す"""
-            if v is None:
-                return -1
+            if v is None: return -1
             s_val = str(v).strip()
             if not s_val:
                 return -1
             try:
                 return int(s_val)
-            except ValueError:
+            except:
                 return -1
 
-        # (BCM番号, 用途ラベル) — 重複は入力同士・入出力のいずれも不可
-        roles = []
-        for t in self.temp_data["gpio"]["triggers"]:
-            roles.append((_get_val(t["pin"]), f'トリガー入力「{t.get("name", "")}」'))
-        for s in self.temp_data["gpio"].get("pattern_pins", []):
-            roles.append((_get_val(s["pin"]), f'パターン切替「{s.get("name", "")}」'))
-        outputs = self.temp_data["gpio"]["outputs"]
-        roles.append((_get_val(outputs["ok"]), "OK出力"))
-        roles.append((_get_val(outputs["ng"]), "NG出力"))
+        all_pins = []  # (ピン番号, 設定名) のリスト
 
-        for p, label in roles:
+        # トリガーピンを収集
+        for t in self.temp_data["gpio"]["triggers"]:
+            all_pins.append((_get_val(t["pin"]), t["name"]))
+        # 判定ピンを収集
+        for s in self.temp_data["gpio"].get("pattern_pins", []):
+            all_pins.append((_get_val(s["pin"]), s["name"]))
+        # 出力ピンを収集
+        outputs = self.temp_data["gpio"]["outputs"]
+        all_pins.append((_get_val(outputs["ok"]), "OK出力"))
+        all_pins.append((_get_val(outputs["ng"]), "NG出力"))
+
+        # 各ピンを検証
+        for p, name in all_pins:
+            # 無効な値（空欄・数値でない）はエラー
             if p == -1:
                 messagebox.showerror("バリデーションエラー",
-                                     f"{label} のBCM番号が未入力または無効です。", parent=self)
+                    f"「{name}」のピン番号が未入力または無効です", parent=self)
                 return False
+            # 有効なBCMピン番号かチェック（ピン0等はエラー）
             if p not in VALID_BCM_PINS:
-                messagebox.showerror(
-                    "バリデーションエラー",
-                    f"{label} のBCM番号 {p} は利用できません（有効なBCMのみ指定してください）。\n"
-                    f"有効なBCM: {sorted(VALID_BCM_PINS)}",
-                    parent=self,
-                )
+                messagebox.showerror("バリデーションエラー",
+                    f"「{name}」のピン番号 {p} は有効なBCMピンではありません\n"
+                    f"有効なピン: {sorted(VALID_BCM_PINS)}", parent=self)
                 return False
+            # 重複チェック
             if p in used_pins:
-                messagebox.showerror(
-                    "バリデーションエラー",
-                    "同じBCM番号を、トリガー入力・パターン切替・OK出力・NG出力のうち複数に割り当てることはできません。\n"
-                    "（入出力でピンを兼用すると、検査動作が不安定になることがあります。）\n\n"
-                    f"重複しているBCM: {p}\n"
-                    f"・{used_pins[p]}\n"
-                    f"・{label}",
-                    parent=self,
-                )
+                messagebox.showerror("バリデーションエラー",
+                    f"ピン {p} が重複しています: {name} と {used_pins[p]}", parent=self)
                 return False
-            used_pins[p] = label
-
+            used_pins[p] = name
+        
         return True
 
     def save_and_close(self):
-        # 編集中のEntry内容を変数へ確実に反映させる（保存直前にフォーカスを外す）
-        try:
-            self.update_idletasks()
-            self.focus_set()
-        except tk.TclError:
-            pass
-
         # バリデーション前に最新の出力ピン設定を同期
         try:
             self.temp_data["gpio"]["outputs"]["ok"] = self.v_ok.get()
@@ -1818,19 +1796,17 @@ class SettingsDialog(tk.Toplevel):
         self.destroy()
 
     def open_gpio_test(self):
-        try:
-            self.update_idletasks()
-            self.focus_set()
-        except tk.TclError:
-            pass
-        try:
-            self.temp_data["gpio"]["outputs"]["ok"] = self.v_ok.get()
-            self.temp_data["gpio"]["outputs"]["ng"] = self.v_ng.get()
-        except tk.TclError:
-            messagebox.showerror("エラー", "出力ピンには数値を入力してください", parent=self)
-            return
-        if not self.validate_pins():
-            return
+        used = set()
+        for t in self.temp_data["gpio"]["triggers"]:
+            if t["pin"] in used:
+                return messagebox.showerror("エラー", f"ピン {t['pin']} が重複しています")
+            used.add(t["pin"])
+        for s in self.temp_data["gpio"].get("pattern_pins", []):
+            if s["pin"] in used:
+                return messagebox.showerror("エラー", f"ピン {s['pin']} が重複しています")
+            used.add(s["pin"])
+        if self.v_ok.get() in used or self.v_ng.get() in used:
+            return messagebox.showerror("エラー", "出力ピンが重複しています")
 
         test_gpio = {
             "triggers": self.temp_data["gpio"]["triggers"],

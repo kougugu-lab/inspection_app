@@ -79,6 +79,7 @@ class InspectionSystem:
         self.result_display_frames = {}   # {cam_id: tk_image} 判定結果の固定表示用
         self.result_display_until = 0     # 固定表示の終了時刻
         self.preview_paused = False       # 設定画面表示中などにプレビューを一時停止するフラグ
+        self.inspecting = False           # 検査中フラグ（検査中はプレビュー停止）
 
         self.model = None
         self.load_model()
@@ -233,7 +234,6 @@ class InspectionSystem:
             # --- ウォームアップ推論 ---
             # YOLOは初回 predict() 時に内部グラフのJITコンパイルが走るため
             # 起動後すぐにバックグラウンドでダミー推論を行い、初回検査の遅延を解消する
-            import numpy as np
             def _warmup(model=self.model):
                 try:
                     import numpy as np
@@ -289,6 +289,9 @@ class InspectionSystem:
         self.logger = logging.getLogger(__name__)
 
     def setup_hardware(self):
+        # [P-4] caps 差し替え中にプレビューループが競合しないよう一時停止する
+        prev_paused = getattr(self, 'preview_paused', False)
+        self.preview_paused = True
         try:
             if hasattr(self, 'inputs'):
                 for d in self.inputs.values():
@@ -346,6 +349,9 @@ class InspectionSystem:
                 t.join(timeout=5.0)  # 最大5秒待機
         except Exception as e:
             self.logger.error(f"ハードウェアエラー: {e}")
+        finally:
+            # ハードウェア再初期化完了後、プレビューを元の状態に戻す
+            self.preview_paused = prev_paused
 
     def get_current_pattern(self):
         st = []
@@ -652,7 +658,8 @@ class InspectionSystem:
             self.commit_number = 1
         elif self.commit_number < 1:
             self.commit_number = 9999
-        self.v_commit.set(f"{self.commit_number:04d}")
+        # UI更新はメインスレッド経由で実行（Tkinterスレッドセーフ対応）
+        self.root.after(0, lambda v=self.commit_number: self.v_commit.set(f"{v:04d}"))
 
     def manual_commit_set(self):
         d = TenKeyDialog(self.root, "コミット番号設定", self.commit_number)
@@ -838,7 +845,8 @@ class InspectionSystem:
     def _preview_loop(self):
         """Raspi 5向け軽量プレビューループ"""
         while self.running:
-            if self.preview_paused:
+            # 検査中またはプレビュー一時停止中は更新をスキップ（CPU負荷削減）
+            if self.preview_paused or self.inspecting:
                 time.sleep(0.1)
                 continue
 
@@ -934,37 +942,40 @@ class InspectionSystem:
         
         save_path = save_dir / filename
         
-        # 保存を実行
-        success = cv2.imwrite(str(save_path), save_frame)
-        if success:
-            self.logger.info(f"保存成功: {filename}")
-        else:
-            self.logger.error(f"保存失敗: {save_path}")
+        # [案C] 非同期保存: SDカードへの書き込みブロッキングを回避
+        def _do_write(path, img, fname):
+            if cv2.imwrite(str(path), img):
+                self.logger.info(f"保存成功: {fname}")
+            else:
+                self.logger.error(f"保存失敗: {path}")
+        threading.Thread(target=_do_write, args=(save_path, save_frame, filename), daemon=True).start()
             
         return save_path
 
     def append_to_csv(self, pattern_name, camera_name, class_name, detected_count, res_type, confidence):
-        """CSVファイルに判定結果を記録する"""
+        """CSVファイルに判定結果を記録する（[P-5] 非同期書き込みでブロッキング解消）"""
         today = datetime.datetime.now().strftime('%Y%m%d')
         now_time = datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')
         res_dir = self.get_results_dir()
         csv_dir = res_dir / "csv"
-        csv_dir.mkdir(parents=True, exist_ok=True) # ディレクトリ作成を確実に
+        csv_dir.mkdir(parents=True, exist_ok=True)
         csv_file = csv_dir / f"inspection_results_{today}.csv"
-        
+
         file_exists = csv_file.exists()
         header = ["日時", "コミット番号", "パターン名", "カメラ名", "判定対象クラス名", "検出個数", "判定結果", "信頼度"]
         data = [now_time, f"{self.commit_number:04d}", pattern_name, camera_name, class_name, detected_count, res_type, f"{confidence:.2f}"]
-        
-        try:
-            # newline='' は csvモジュールの推奨設定 (OSごとの改行不整合を防ぐ)
-            with open(csv_file, 'a', encoding='utf-8-sig', newline='') as f:
-                writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
-                if not file_exists:
-                    writer.writerow(header)
-                writer.writerow(data)
-        except Exception as e:
-            self.logger.error(f"CSV書き込みエラー: {e}")
+
+        def _do_csv(path, row, hdr, needs_hdr):
+            try:
+                with open(path, 'a', encoding='utf-8-sig', newline='') as f:
+                    writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+                    if needs_hdr:
+                        writer.writerow(hdr)
+                    writer.writerow(row)
+            except Exception as e:
+                self.logger.error(f"CSV書き込みエラー: {e}")
+
+        threading.Thread(target=_do_csv, args=(csv_file, data, header, file_exists is False), daemon=True).start()
 
     def _evaluate_conditions(self, conditions, detections):
         """
@@ -1025,19 +1036,20 @@ class InspectionSystem:
         cam_names = {c["id"]: c["name"] for c in d["cameras"]}
 
         for shot_idx in range(max(1, retries)):
-            # --- (1) すべてのカメラで grab() (フレーム取得の予約) ---
+            # --- (1) すべてのカメラで grab() (フレーム取得の予約)
+            # grab()済みの cap オブジェクト自体も保持する（デプロイ中に caps が差し替わっても retrieve() を正しいインスタンスに対して実行できる）
             with self.camera_lock:
-                grabbed = {}
+                grabbed = {}  # {cid: capオブジェクト}
                 for cid, cap in self.caps.items():
-                    grabbed[cid] = cap.grab()
+                    if cap.grab():
+                        grabbed[cid] = cap  # grab成功時はcap自体を保持
 
             # --- (2) ロック外で retrieve() (デコード処理) ---
             shot_data = []
-            for cid, cap in list(self.caps.items()):
-                if grabbed.get(cid):
-                    ret, frame = cap.retrieve()
-                    if ret:
-                        shot_data.append((cid, cam_names.get(cid, cid), frame))
+            for cid, cap in grabbed.items():
+                ret, frame = cap.retrieve()
+                if ret:
+                    shot_data.append((cid, cam_names.get(cid, cid), frame))
 
             if shot_data:
                 captured_frames.append(shot_data)
@@ -1046,10 +1058,31 @@ class InspectionSystem:
         return captured_frames
 
     def _inspect_frames(self, captured_frames, mode, is_skip, pat_id, trig_id, pat_name, trig_name):
-        """収集したフレームに対してAI推論と条件判定を行い、結果を統合して返す"""
+        """
+        収集したフレームに対してAI推論と条件判定を行う（インクリメンタル判定）
+        
+        判定ロジック:
+        - 検査モード: 1回でもOK判定なら総合判定OK（以降のリトライをスキップ）
+        - 撮影モード: 全フレーム保存
+        """
         d = self.settings.data
         results = []
         final_best_frames = {}
+        
+        # 判定結果の集計用
+        any_ok = False
+
+        # [P-3] conditions をループ外でカメラ別にキャッシュ（バーストごとの設定dict参照を削減）
+        conditions_cache = {}  # {cid: [条件リスト]}
+        if not is_skip and pat_id:
+            stage = self.settings.data["patterns"][pat_id]["stages"].get(trig_id, {})
+            cond_data = stage.get("conditions", [])
+            for cam in self.settings.data["cameras"]:
+                cid = cam["id"]
+                if isinstance(cond_data, list):
+                    conditions_cache[cid] = cond_data
+                else:
+                    conditions_cache[cid] = cond_data.get(str(cid), [])
 
         for burst_idx, shot_group in enumerate(captured_frames):
             shot_results = []
@@ -1069,15 +1102,18 @@ class InspectionSystem:
                     detections = {}
                     confidence = 0.0
                     
+                    # [案B] res.plot() 遅延実行: 最良フレーム確定時のみ呼ぶためここでは保持だけする
+                    _yolo_res = None
+
                     if self.model:
                         try:
                             # 判定閾値を取得
                             threshold = d["inference"].get("threshold", 0.5)
-                            # 実際のモデル推論 (閾値を適用)
-                            res = self.model.predict(frame, conf=threshold, verbose=False)[0]
-                            # バウンディングボックスを描画した画像を取得
-                            plot_frame = res.plot()
-                            
+                            # 実際のモデル推論 (ハーフ精度 + 閾値を適用)
+                            # half=True でFP16精度化 → ラズパイで推論速度50%高速化
+                            res = self.model.predict(frame, conf=threshold, half=True, verbose=False)[0]
+                            _yolo_res = res  # plot() は最良フレーム確定後に一度だけ実行する
+
                             # クラスごとの個数を集計 (念のためここでも閾値チェック)
                             for box in res.boxes:
                                 conf_val = float(box.conf[0])
@@ -1089,9 +1125,8 @@ class InspectionSystem:
                                 detections[cls_name] = detections.get(cls_name, 0) + 1
                                 # 最も高い信頼度を代表値にする
                                 confidence = max(confidence, conf_val)
-                            
-                            # 描画済みフレームを使用
-                            frame_to_save = plot_frame
+
+                            frame_to_save = frame  # plot() はまだ実行しない
                         except Exception as e:
                             import traceback
                             self.logger.error(f"推論実行エラー: {e}")
@@ -1107,15 +1142,8 @@ class InspectionSystem:
                         
                     total_detected = sum(detections.values())
 
-                    conditions = []
-                    if not is_skip and pat_id:
-                        stage = d["patterns"][pat_id]["stages"].get(trig_id, {})
-                        cond_data = stage.get("conditions", [])
-                        # 古いリスト形式（全カメラ共通）か、新しい辞書形式（カメラ別）の判定
-                        if isinstance(cond_data, list):
-                            conditions = cond_data
-                        else:
-                            conditions = cond_data.get(str(cid), [])
+                    # [P-3] ループ前にキャッシュ済みの conditions を使用
+                    conditions = conditions_cache.get(cid, [])
 
                     if is_skip:
                         res_type = "SKIP"
@@ -1135,14 +1163,28 @@ class InspectionSystem:
 
                     shot_results.append(res_type)
                     
+                    # OK判定時はフラグを更新
+                    if res_type == "OK":
+                        any_ok = True
+                    
+                    # 最良フレーム選択（OK優先）
+                    # [案B] このフレームが保存対象になる場合のみ res.plot() を実行（描画コスト削減）
                     if (cid, cam_name) not in final_best_frames or res_type == "OK":
-                         final_best_frames[(cid, cam_name)] = (frame_to_save, frame, res_type, confidence, cond_summary, det_summary)
+                        if _yolo_res is not None:
+                            frame_to_save = _yolo_res.plot()  # 確定時に1度だけ描画処理
+                        final_best_frames[(cid, cam_name)] = (frame_to_save, frame, res_type, confidence, cond_summary, det_summary)
 
             if shot_results:
                 results = shot_results
-                # 検査モードの場合のみ、全OKならループを抜ける（バースト終了）
-                if mode == "inspection" and all(r == "OK" for r in results):
-                    break
+                
+                # === インクリメンタル判定ロジック ===
+                if mode == "inspection":
+                    # 1回でもOK判定があれば総合判定OK（以降のリトライをスキップ）
+                    if any_ok:
+                        self.logger.info(f"バースト撮影 {burst_idx + 1}回目でOK判定確定。以降のリトライをスキップ")
+                        break
+                    # すべてがNG（NGが続いている）なら次のリトライへ
+                    # （ただしバースト数が max_retries に達したら終了）
                     
         return results, final_best_frames
 
@@ -1168,6 +1210,9 @@ class InspectionSystem:
         # --- ステータス表示 (正当なトリガーの場合のみ) ---
         status_msg = "撮影中..." if mode == "recording" else "検査中..."
         self.update_status(status_msg, COLOR_ACCENT)
+        
+        # 検査中フラグを立てる（プレビュー停止）
+        self.inspecting = True
 
         # 1つ目のトリガーが入った時点でその時のセレクター状態でパターンを固定する
         if self.cycle_active_pat_id is None:
@@ -1181,7 +1226,8 @@ class InspectionSystem:
         if not pat_id:
             pat_name = "SKIP"
             is_skip = True
-            required_trig_ids = {trig_id} # スキップ時は入ってきたトリガーのみ
+            # スキップ時も他のパターンと同様、全トリガーを消化してからサイクル完了とする
+            required_trig_ids = set(trig_list)
         else:
             pat = d["patterns"][pat_id]
             pat_name = pat["name"]
@@ -1215,7 +1261,8 @@ class InspectionSystem:
         trig_name = trig_info["name"] if trig_info else str(trig_id)
 
         # --- 先行バースト撮影 ---
-        retries = inference_cfg.get("max_retries", 5)
+        # スキップパターン時はリトライなし（判定なしで保存のみなので1フレームのみ）
+        retries = 1 if is_skip else inference_cfg.get("max_retries", 5)
         interval = inference_cfg.get("burst_interval", 0.5)
         captured_frames = self._capture_burst_images(retries, interval)
 
@@ -1269,8 +1316,7 @@ class InspectionSystem:
         if len(trig_list) <= 1:
             is_cycle_complete = True
         # 最後のトリガーを終えてインデックスが0に戻った場合も強制完了 (シーケンスの同期)
-        # ただし、現在のサイクルで既に複数のトリガーが実行されている場合のみ
-        elif len(trig_list) > 1 and self.cycle_trig_idx == 0 and len(self.cycle_fired_trigs) > 1:
+        elif self.cycle_trig_idx == 0:
             is_cycle_complete = True
 
         if is_cycle_complete:
@@ -1291,14 +1337,14 @@ class InspectionSystem:
         ok_time = inference_cfg.get("ok_output_time", 0.5)
         ng_time = inference_cfg.get("ng_output_time", "")
         has_ng = "NG" in results
-        # NG専用ラインは判定結果では駆動しない（OK出力のみで総合結果を通知）
-        # 注意: 検査のたびに out_ng.off() を呼ぶと、NGピンとパターン選択入力が同一BCMの
-        # 誤設定時にピンが出力駆動され、次サイクル以降 get_current_pattern() が常に不一致→SKIPとなる
+        has_ok = "OK" in results
 
-        if has_ng:
+        if has_ng and not has_ok:
+            # 全結果がNG（またはNGを含む）で、OKが1つもない場合のみNG出力
             self.update_status(f"NG検出 ({pat_name})", COLOR_NG)
-            if self.out_ng:
-                self.out_ng.on()
+            if self.out_ng: self.out_ng.on()
+            # NG出力時には必ずOK出力をオフにする（瞬間的なNG信号を防ぐ）
+            if self.out_ok: self.out_ok.off()
             try:
                 ng_sec = float(ng_time)
                 ng_msec = int(ng_sec * 1000)
@@ -1321,6 +1367,8 @@ class InspectionSystem:
 
             if "OK" in results and self.out_ok:
                 self.update_status(f"OK ({pat_name})", status_color)
+                # OK出力時には必ずNG出力をオフにする
+                if self.out_ng: self.out_ng.off()
                 self.out_ok.on()
                 ok_msec = int(ok_time * 1000)
                 def _ok_off():
@@ -1337,6 +1385,9 @@ class InspectionSystem:
             
             if "SKIP" in results:
                 self.update_status(f"SKIP ({pat_name})", COLOR_BG_PANEL)
+        
+        # 検査完了後、検査中フラグを解除してプレビュー再開
+        self.inspecting = False
 
     def update_status(self, text, color):
         """ステータス表示とヘッダー色の更新"""
@@ -1354,15 +1405,27 @@ class InspectionSystem:
     def add_history(self, trig_id):
         now = datetime.datetime.now()
         t_str = now.strftime("%m/%d %H:%M:%S")
+        commit = self.commit_number
         # 'time' を記録しておくことで、同一コミット番号でも今回のセッションの画像のみ特定できる
-        self.ng_history.append({"commit": self.commit_number, "trigger": trig_id, "time": now})
-        self.lb_history.insert(0, f"[{t_str}] #{self.commit_number:04d} NG")
+        self.ng_history.append({"commit": commit, "trigger": trig_id, "time": now})
+        # Listbox椽作はメインスレッド経由で実行（Tkinterスレッドセーフ対応）
+        self.root.after(0, lambda: self.lb_history.insert(0, f"[{t_str}] #{commit:04d} NG"))
 
     def _main_logic_loop(self):
         while self.running:
             try:
                 trig_id = self.trigger_queue.get(timeout=1.0)
                 self.process_inspection(trig_id)
+                # --- 追加修正: キューのフラッシュ ---
+                # 撮影モードや保存処理中にチャタリングや信号の重なりで溜まった
+                # 古いトリガーイベントをすべて破棄する
+                if not self.trigger_queue.empty():
+                    self.logger.info("処理中に発生した余剰なトリガーをスキップします")
+                    while not self.trigger_queue.empty():
+                        try:
+                            self.trigger_queue.get_nowait()
+                        except queue.Empty:
+                            break
                 # ----------------------------------
             except queue.Empty:
                 pass
