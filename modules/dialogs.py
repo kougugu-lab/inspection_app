@@ -336,6 +336,7 @@ class SettingsDialog(tk.Toplevel):
                          "・撮影解像度: カメラから読み出す際の土台のサイズです。大きいほどAIの精度が上がる可能性がありますが、遅くなります。\n"
                          "・各判定画像の保存サイズ: 保存時の大きさを決めます。「保存しない」を選ぶと画像が残りません。",
             "5. システム最適化": "【概要】AIの挙動や画面表示、タイマーの微調整です。\n"
+                            "・AIモデルのパス: 推論に使用する学習済みモデルのパスを指定します。NCNN形式の場合、必ずフォルダ名の末尾を `.ncnn` にしてください（例: `best.ncnn`）。\n"
                             "・結果出力先: ログ、CSV、画像一式を保存する親フォルダの場所を絶対パスで指定します。\n"
                             "・判定しきい値: AIの自信がこの数値(0.0~1.0)以上なら「検出した」とみなします。\n"
                             "・最大リトライ: 1回のトリガーで何回まで撮り直すか。撮影モードではこの回数分を全て保存します。\n"
@@ -944,7 +945,10 @@ class SettingsDialog(tk.Toplevel):
                 self.pin_widgets[trig_obj["id"]] = (led, circle)
 
                 def _upd_trig_inner(v1=vn, v2=vp):
-                    self.temp_data["gpio"]["triggers"][idx].update({"name": v1.get(), "pin": v2.get()})
+                    try:
+                        self.temp_data["gpio"]["triggers"][idx].update({"name": v1.get(), "pin": v2.get()})
+                    except tk.TclError:
+                        pass  # 入力途中（空文字など）のエラーは無視
                 
                 vn.trace_add("write", lambda *a: _upd_trig_inner())
                 vp.trace_add("write", lambda *a: _upd_trig_inner())
@@ -984,7 +988,10 @@ class SettingsDialog(tk.Toplevel):
             self.pin_widgets[f"sel_{s['id']}"] = (led, circle)
 
             def _upd_sel(*args, idx=i, name_var=vn, pin_var=vp):
-                self.temp_data["gpio"]["pattern_pins"][idx].update({"name": name_var.get(), "pin": pin_var.get()})
+                try:
+                    self.temp_data["gpio"]["pattern_pins"][idx].update({"name": name_var.get(), "pin": pin_var.get()})
+                except tk.TclError:
+                    pass  # 入力途中のエラーを無視
             vn.trace_add("write", _upd_sel)
             vp.trace_add("write", _upd_sel)
 
@@ -1162,7 +1169,10 @@ class SettingsDialog(tk.Toplevel):
             _create_pin_ui()
 
         def _upd_p_pins(*a):
-            p["pin_condition"] = [var.get() for var in p_vars]
+            try:
+                p["pin_condition"] = [var.get() for var in p_vars]
+            except tk.TclError:
+                pass
         for v in p_vars:
             v.trace_add("write", _upd_p_pins)
 
@@ -1247,9 +1257,12 @@ class SettingsDialog(tk.Toplevel):
                             self._spinbox(row_f, nv, 0, 999, 1, width=8, key_path=f"{kp}.count").pack(side=tk.LEFT, padx=5)
                             
                             def _upd_cond(c_dict=cond_obj, v1=cv, v2=nv, w_cb=cb, k_p=kp):
-                                c_dict["class"] = v1.get()
-                                c_dict["count"] = v2.get()
-                                self._mark_changed()
+                                try:
+                                    c_dict["class"] = v1.get()
+                                    c_dict["count"] = v2.get()
+                                    self._mark_changed()
+                                except tk.TclError:
+                                    pass
                             
                             cv.trace_add("write", lambda *a, u=_upd_cond: u())
                             nv.trace_add("write", lambda *a, u=_upd_cond: u())

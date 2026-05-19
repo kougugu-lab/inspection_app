@@ -219,16 +219,27 @@ class InspectionSystem:
             self.logger.warning("モデルパスが設定されていません。シミュレーションモードで動作します。")
             return
 
-        # ncnn モデルはフォルダ (*.ncnn) または .param/.bin ファイルが入ったディレクトリ
         path_obj = Path(model_path)
-        path_exists = path_obj.exists() or (path_obj.is_dir())
-        if not path_exists:
+        if not path_obj.exists():
             self.logger.warning(f"モデルファイルが見つからないため、シミュレーションモードで動作します: {model_path}")
+            return
+
+        # NCNNモデルのフォルダ名要件チェック
+        # Ultralyticsはフォルダ名の末尾が「.ncnn」であることでNCNNモデルと識別する
+        # (*.ncnn/best.ncnn.param, *.ncnn/best.ncnn.bin が必要)
+        if path_obj.is_dir() and not str(model_path).endswith(".ncnn"):
+            self.logger.error(
+                f"[NCNNフォルダ名エラー] 指定フォルダの名前が '.ncnn' で終わっていません。\n"
+                f"  現在のパス: {model_path}\n"
+                f"  Ultralyticsはフォルダ名が '*.ncnn' であることでNCNNモデルと識別します。\n"
+                f"  一例: /home/pi/inspection_app/models/best.ncnn\n"
+                f"  フォルダ内構成: best.ncnn/best.ncnn.param, best.ncnn/best.ncnn.bin"
+            )
             return
 
         try:
             self.model = YOLO(model_path)
-            fmt = "ncnn" if path_obj.is_dir() or str(model_path).endswith(".ncnn") else "pt"
+            fmt = "ncnn" if path_obj.is_dir() else "pt"
             self.logger.info(f"YOLOモデルをロードしました ({fmt}): {model_path}")
 
             # --- ウォームアップ推論 ---
