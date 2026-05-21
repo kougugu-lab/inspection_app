@@ -80,8 +80,10 @@ class InspectionSystem:
         self.result_display_until = 0     # 固定表示の終了時刻
         self.preview_paused = False       # 設定画面表示中などにプレビューを一時停止するフラグ
         self.inspecting = False           # 検査中フラグ（検査中はプレビュー停止）
+        self.settings_open = False        # 設定画面表示中フラグ（設定画面が開いている間は検査を行わない）
 
         self.model = None
+        self.model_lock = threading.Lock()
         self.load_model()
 
         self.setup_hardware()
@@ -249,7 +251,8 @@ class InspectionSystem:
                 try:
                     import numpy as np
                     dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-                    model.predict(dummy, verbose=False)
+                    with self.model_lock:
+                        model.predict(dummy, verbose=False)
                     self.logger.info("YOLOモデルのウォームアップ完了")
                 except Exception:
                     pass  # ウォームアップ失敗は無視（実際の推論には影響しない）
@@ -319,12 +322,12 @@ class InspectionSystem:
             data = self.settings.data
 
             for t in data["gpio"]["triggers"]:
-                dev = DigitalInputDevice(t["pin"], pull_up=True)
+                dev = DigitalInputDevice(t["pin"], pull_up=True, bounce_time=0.05)
                 dev.when_activated = lambda i=t["id"]: self.trigger_queue.put(i)
                 self.inputs[t["id"]] = dev
 
             for s in data["gpio"].get("pattern_pins", []):
-                self.inputs[f"sel_{s['id']}"] = DigitalInputDevice(s["pin"], pull_up=True)
+                self.inputs[f"sel_{s['id']}"] = DigitalInputDevice(s["pin"], pull_up=True, bounce_time=0.05)
 
             self.out_ok = OutputDevice(data["gpio"]["outputs"]["ok"])
             self.out_ng = OutputDevice(data["gpio"]["outputs"]["ng"])
@@ -831,10 +834,13 @@ class InspectionSystem:
         # 
         # for cap in temp_caps.values():
         #     cap.release()
-            
+        self.settings_open = True
+        self.logger.info("設定画面を開きました。設定画面が閉じるまで検査処理をスキップします。")
         SettingsDialog(self.root, self.settings, self.on_settings_closed)
 
     def on_settings_closed(self):
+        self.settings_open = False
+        self.logger.info("設定画面が閉じられました。検査処理を再開します。")
         self.setup_hardware()
         self.v_mode.set(self.settings.data["inference"].get("mode", "inspection"))
         self.update_mode_ui()
@@ -861,6 +867,24 @@ class InspectionSystem:
                 time.sleep(0.1)
                 continue
 
+            # 結果表示時間中は判定結果画像を固定表示する
+            if time.time() < self.result_display_until:
+                for cid, pil_img in list(self.result_display_frames.items()):
+                    if not getattr(self.cam_labels.get(cid), 'is_updating', False):
+                        self.cam_labels[cid].is_updating = True
+                        def _upd_static(c=cid, img_data=pil_img):
+                            if c in self.cam_labels:
+                                try:
+                                    tk_img = ImageTk.PhotoImage(img_data)
+                                    self.cam_labels[c].config(image=tk_img)
+                                    self.cam_labels[c].img = tk_img
+                                except Exception: pass
+                                finally:
+                                    self.cam_labels[c].is_updating = False
+                        self.root.after(0, _upd_static)
+                time.sleep(0.1)
+                continue
+
             t_start = time.time()
             
             # ロックの保持時間を最小限にするため、キャプチャ対象のリストをコピーして取得する
@@ -868,41 +892,48 @@ class InspectionSystem:
                 current_caps = list(self.caps.items())
             
             for cid, cap in current_caps:
-                # このループ内ではロックを保持しないため、他のスレッドが self.caps を変更可能
+                if self.preview_paused or self.inspecting:
+                    break
                 try:
-                    if cap.grab():
-                        ret, frame = cap.retrieve()
-                        if ret:
-                            self.last_frames[cid] = frame  # Numpy配列は新規生成されるためcopy不要（負荷削減）
-                            # Tkinterのイベントキュー詰まりによるカクつきを防止
-                            # (描画が追いつかない場合は、重いリサイズ・色変換・PIL変換そのものをスキップする)
-                            if not getattr(self.cam_labels.get(cid), 'is_updating', False):
-                                self.cam_labels[cid].is_updating = True
-                                
-                                def _upd_live(c=cid, f_data=frame):
-                                    if c in self.cam_labels:
-                                        try:
-                                            # 重い処理をルートスレッド（Tkinter）側に逃がさず、
-                                            # かといって描画キューが詰まらないように制限をかける
-                                            preview_res = self.settings.data["storage"].get("preview_res", "320x240")
-                                            if preview_res != "プレビューなし":
-                                                try:
-                                                    pw, ph = map(int, preview_res.split('x'))
-                                                except Exception:
-                                                    pw, ph = 320, 240
-                                                
-                                                img = cv2.resize(f_data, (pw, ph), interpolation=cv2.INTER_LINEAR)
-                                                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                                                pil_img = Image.fromarray(img)
-                                                
-                                                tk_img = ImageTk.PhotoImage(pil_img)
-                                                self.cam_labels[c].config(image=tk_img)
-                                                self.cam_labels[c].img = tk_img
-                                        except Exception: pass
-                                        finally:
-                                            self.cam_labels[c].is_updating = False
+                    with self.camera_lock:
+                        if cid not in self.caps:
+                            continue
+                        grabbed = cap.grab()
+                        if grabbed:
+                            ret, frame = cap.retrieve()
+                        else:
+                            ret = False
+                    if grabbed and ret:
+                        self.last_frames[cid] = frame  # Numpy配列は新規生成されるためcopy不要（負荷削減）
+                        # Tkinterのイベントキュー詰まりによるカクつきを防止
+                        # (描画が追いつかない場合は、重いリサイズ・色変換・PIL変換そのものをスキップする)
+                        if not getattr(self.cam_labels.get(cid), 'is_updating', False):
+                            self.cam_labels[cid].is_updating = True
+                            
+                            def _upd_live(c=cid, f_data=frame):
+                                if c in self.cam_labels:
+                                    try:
+                                        # 重い処理をルートスレッド（Tkinter）側に逃がさず、
+                                        # かといって描画キューが詰まらないように制限をかける
+                                        preview_res = self.settings.data["storage"].get("preview_res", "320x240")
+                                        if preview_res != "プレビューなし":
+                                            try:
+                                                pw, ph = map(int, preview_res.split('x'))
+                                            except Exception:
+                                                pw, ph = 320, 240
+                                            
+                                            img = cv2.resize(f_data, (pw, ph), interpolation=cv2.INTER_LINEAR)
+                                            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                                            pil_img = Image.fromarray(img)
+                                            
+                                            tk_img = ImageTk.PhotoImage(pil_img)
+                                            self.cam_labels[c].config(image=tk_img)
+                                            self.cam_labels[c].img = tk_img
+                                    except Exception: pass
+                                    finally:
+                                        self.cam_labels[c].is_updating = False
 
-                                self.root.after(0, _upd_live)
+                            self.root.after(0, _upd_live)
                 except Exception as e:
                     self.logger.error(f"Preview error (cid={cid}): {e}")
 
@@ -1050,6 +1081,13 @@ class InspectionSystem:
             # --- (1) すべてのカメラで grab() (フレーム取得の予約)
             # grab()済みの cap オブジェクト自体も保持する（デプロイ中に caps が差し替わっても retrieve() を正しいインスタンスに対して実行できる）
             with self.camera_lock:
+                # 初回のショットの前に、カメラのバッファに溜まっている古いフレームを空読みして破棄する
+                if shot_idx == 0:
+                    for cid, cap in self.caps.items():
+                        # 3回空読みして古いバッファをクリア
+                        for _ in range(3):
+                            cap.grab()
+
                 grabbed = {}  # {cid: capオブジェクト}
                 for cid, cap in self.caps.items():
                     if cap.grab():
@@ -1098,6 +1136,13 @@ class InspectionSystem:
         for burst_idx, shot_group in enumerate(captured_frames):
             shot_results = []
             for cid, cam_name, frame in shot_group:
+                # 入力画像フレームのバリデーション（破損・空画像の排除）
+                if frame is None or not hasattr(frame, "shape") or frame.size == 0 or len(frame.shape) < 2 or frame.shape[0] == 0 or frame.shape[1] == 0:
+                    self.logger.warning(
+                        f"不正な画像フレームを検出 (カメラ: {cam_name}, shape: {getattr(frame, 'shape', None)})。スキップします。"
+                    )
+                    continue
+
                 if mode == "recording":
                     # 撮影モード: 保存のみ（バーストごとに保存）
                     save_needed = True
@@ -1115,62 +1160,61 @@ class InspectionSystem:
                     
                     # [案B] res.plot() 遅延実行: 最良フレーム確定時のみ呼ぶためここでは保持だけする
                     _yolo_res = None
+                    frame_to_save = frame
 
-                    if self.model:
-                        try:
-                            # 判定閾値を取得
-                            threshold = d["inference"].get("threshold", 0.5)
-                            # 実際のモデル推論 (ハーフ精度 + 閾値を適用)
-                            # half=True でFP16精度化 → ラズパイで推論速度50%高速化
-                            res = self.model.predict(frame, conf=threshold, half=True, verbose=False)[0]
-                            _yolo_res = res  # plot() は最良フレーム確定後に一度だけ実行する
-
-                            # クラスごとの個数を集計 (念のためここでも閾値チェック)
-                            for box in res.boxes:
-                                conf_val = float(box.conf[0])
-                                if conf_val < threshold:
-                                    continue
-                                    
-                                cls_id = int(box.cls[0])
-                                cls_name = res.names[cls_id]
-                                detections[cls_name] = detections.get(cls_name, 0) + 1
-                                # 最も高い信頼度を代表値にする
-                                confidence = max(confidence, conf_val)
-
-                            frame_to_save = frame  # plot() はまだ実行しない
-                        except Exception as e:
-                            import traceback
-                            self.logger.error(f"推論実行エラー: {e}")
-                            self.logger.error(traceback.format_exc())
-                            detections = {}
-                            confidence = 0.0
-                            frame_to_save = frame
-                    else:
-                        # モデル未設定時はシミュレーションモード
-                        detections = {"object": 1}
-                        confidence = random.uniform(0.85, 0.99)
-                        frame_to_save = frame
-                        
-                    total_detected = sum(detections.values())
-
-                    # [P-3] ループ前にキャッシュ済みの conditions を使用
                     conditions = conditions_cache.get(cid, [])
-
-                    if is_skip:
+                    if is_skip or not conditions:
                         res_type = "SKIP"
                         total_detected = 0
-                        confidence = 0.00
+                        cond_summary = "-"
+                        det_summary = "0"
                     else:
+                        if self.model:
+                            try:
+                                # 判定閾値を取得
+                                threshold = d["inference"].get("threshold", 0.5)
+                                # 実際のモデル推論 (ハーフ精度 + 閾値を適用)
+                                # half=True でFP16精度化 → ラズパイで推論速度50%高速化
+                                with self.model_lock:
+                                    res = self.model.predict(frame, conf=threshold, half=True, verbose=False)[0]
+                                _yolo_res = res  # plot() は最良フレーム確定後に一度だけ実行する
+
+                                # クラスごとの個数を集計 (念のためここでも閾値チェック)
+                                for box in res.boxes:
+                                    conf_val = float(box.conf[0])
+                                    if conf_val < threshold:
+                                        continue
+                                        
+                                    cls_id = int(box.cls[0])
+                                    cls_name = res.names[cls_id]
+                                    detections[cls_name] = detections.get(cls_name, 0) + 1
+                                    # 最も高い信頼度を代表値にする
+                                    confidence = max(confidence, conf_val)
+
+                            except Exception as e:
+                                import traceback
+                                self.logger.error(f"推論実行エラー: {e}")
+                                self.logger.error(traceback.format_exc())
+                                detections = {}
+                                confidence = 0.0
+                        else:
+                            # モデル未設定時はシミュレーションモード
+                            detections = {"object": 1}
+                            confidence = random.uniform(0.85, 0.99)
+                            
+                        total_detected = sum(detections.values())
+
+                        # [P-3] ループ前にキャッシュ済みの conditions を使用
                         res_type = self._evaluate_conditions(conditions, detections)
                         if total_detected == 0:
                             confidence = 0.00
 
-                    cond_summary = ", ".join(
-                        f"{c.get('class', '*')}x{c.get('count', '?')}" for c in conditions
-                    ) if conditions else "-"
-                    
-                    # ログの「実際検出数」と合わせるため、全検出結果の要約を作成
-                    det_summary = ", ".join(f"{k}:{v}" for k, v in detections.items()) if detections else "0"
+                        cond_summary = ", ".join(
+                            f"{c.get('class', '*')}x{c.get('count', '?')}" for c in conditions
+                        ) if conditions else "-"
+                        
+                        # ログの「実際検出数」と合わせるため、全検出結果の要約を作成
+                        det_summary = ", ".join(f"{k}:{v}" for k, v in detections.items()) if detections else "0"
 
                     shot_results.append(res_type)
                     
@@ -1215,7 +1259,8 @@ class InspectionSystem:
         expected_trig = trig_list[self.cycle_trig_idx]
         if trig_id != expected_trig:
             expected_name = next((t["name"] for t in d["gpio"]["triggers"] if t["id"] == expected_trig), expected_trig)
-            self.logger.warning(f"順序外のトリガーを無視: 受信={trig_id}, 期待={expected_name}")
+            received_name = next((t["name"] for t in d["gpio"]["triggers"] if t["id"] == trig_id), trig_id)
+            self.logger.warning(f"順序外のトリガーを無視: 受信={received_name}, 期待={expected_name}")
             return
 
         # --- ステータス表示 (正当なトリガーの場合のみ) ---
@@ -1336,6 +1381,7 @@ class InspectionSystem:
             self.cycle_active_pat_id = None
             self.cycle_fired_trigs.clear()
             self.cycle_trig_idx = 0  # 念のためリセット
+            self.clear_trigger_queue()  # サイクル完了時に余分なトリガーを破棄
         else:
             next_trig_id = trig_list[self.cycle_trig_idx]
             next_trig_name = next((t["name"] for t in d["gpio"]["triggers"] if t["id"] == next_trig_id), str(next_trig_id))
@@ -1422,10 +1468,27 @@ class InspectionSystem:
         # Listbox椽作はメインスレッド経由で実行（Tkinterスレッドセーフ対応）
         self.root.after(0, lambda: self.lb_history.insert(0, f"[{t_str}] #{commit:04d} NG"))
 
+    def clear_trigger_queue(self):
+        """トリガーキューに溜まっているイベントをすべて破棄する"""
+        while not self.trigger_queue.empty():
+            try:
+                self.trigger_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def _main_logic_loop(self):
         while self.running:
             try:
                 trig_id = self.trigger_queue.get(timeout=1.0)
+
+                # 設定画面が開いている間はトリガーを無視して検査をスキップする
+                if self.settings_open:
+                    trig_name = next((t["name"] for t in self.settings.data["gpio"]["triggers"] if t["id"] == trig_id), trig_id)
+                    self.logger.warning(
+                        f"設定画面表示中にトリガーを受信しました（受信={trig_name}）。検査をスキップします。"
+                    )
+                    continue
+
                 self.process_inspection(trig_id)
                 # --- 追加修正: キューのフラッシュ ---
                 # 撮影モードや保存処理中にチャタリングや信号の重なりで溜まった
