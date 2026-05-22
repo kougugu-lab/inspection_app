@@ -240,7 +240,7 @@ class InspectionSystem:
             return
 
         try:
-            self.model = YOLO(model_path)
+            self.model = YOLO(model_path, task="detect") if path_obj.is_dir() else YOLO(model_path)
             fmt = "ncnn" if path_obj.is_dir() else "pt"
             self.logger.info(f"YOLOモデルをロードしました ({fmt}): {model_path}")
 
@@ -1396,20 +1396,37 @@ class InspectionSystem:
         has_ng = "NG" in results
         has_ok = "OK" in results
 
-        if has_ng and not has_ok:
-            # 全結果がNG（またはNGを含む）で、OKが1つもない場合のみNG出力
+        if has_ng:
+            # 1つでもNGがあれば総合判定NG
             self.update_status(f"NG検出 ({pat_name})", COLOR_NG)
-            if self.out_ng: self.out_ng.on()
-            # NG出力時には必ずOK出力をオフにする（瞬間的なNG信号を防ぐ）
-            if self.out_ok: self.out_ok.off()
-            try:
-                ng_sec = float(ng_time)
-                ng_msec = int(ng_sec * 1000)
-                def _ng_off():
-                    if self.out_ng: self.out_ng.off()
-                self.root.after(max(10, ng_msec), _ng_off)
-            except: pass
+            # OK出力は確実にOFFにする
+            if self.out_ok:
+                self.out_ok.off()
 
+            # --- NG GPIO出力制御 ---
+            # 空白: ブザー停止ボタンを押すまで出力し続ける
+            # 0秒: 出力しない
+            # N秒: N秒間出力してから自動OFF
+            if self.out_ng:
+                ng_time_str = str(ng_time).strip() if ng_time is not None else ""
+                if ng_time_str == "":
+                    # 空白設定: 常時出力（ブザー停止ボタンで手動OFF）
+                    self.out_ng.on()
+                else:
+                    try:
+                        ng_sec = float(ng_time_str)
+                        if ng_sec > 0:
+                            self.out_ng.on()
+                            ng_msec = int(ng_sec * 1000)
+                            def _ng_off():
+                                if self.out_ng:
+                                    self.out_ng.off()
+                            self.root.after(max(10, ng_msec), _ng_off)
+                        # ng_sec <= 0: 出力しない
+                    except ValueError:
+                        pass
+
+            # --- ブザー制御 ---
             bp = inference_cfg.get("buzzer_path", "")
             if bp and PYGAME_AVAILABLE and os.path.exists(bp):
                 try:
