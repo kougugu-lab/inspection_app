@@ -240,8 +240,9 @@ class InspectionSystem:
             return
 
         try:
-            self.model = YOLO(model_path, task="detect") if path_obj.is_dir() else YOLO(model_path)
-            fmt = "ncnn" if path_obj.is_dir() else "pt"
+            is_ncnn = path_obj.is_dir() or str(model_path).endswith(".ncnn")
+            self.model = YOLO(model_path, task="detect") if is_ncnn else YOLO(model_path)
+            fmt = "ncnn" if is_ncnn else "pt"
             self.logger.info(f"YOLOモデルをロードしました ({fmt}): {model_path}")
 
             # --- ウォームアップ推論 ---
@@ -1439,15 +1440,23 @@ class InspectionSystem:
             # 全てOKまたはSKIPならOKステータス（1つでもOKがあればOK色）
             status_color = COLOR_OK if "OK" in results else COLOR_BG_PANEL
 
-            if "OK" in results and self.out_ok:
+            if "OK" in results:
                 self.update_status(f"OK ({pat_name})", status_color)
                 # OK出力時には必ずNG出力をオフにする
-                if self.out_ng: self.out_ng.off()
-                self.out_ok.on()
-                ok_msec = int(ok_time * 1000)
-                def _ok_off():
-                    if self.out_ok: self.out_ok.off()
-                self.root.after(max(10, ok_msec), _ok_off)
+                if self.out_ng:
+                    try:
+                        self.out_ng.off()
+                    except: pass
+                if self.out_ok:
+                    try:
+                        self.out_ok.on()
+                        ok_msec = int(ok_time * 1000)
+                        def _ok_off():
+                            try:
+                                if self.out_ok: self.out_ok.off()
+                            except: pass
+                        self.root.after(max(10, ok_msec), _ok_off)
+                    except: pass
 
                 ok_bp = inference_cfg.get("ok_buzzer_path", "")
                 if ok_bp and PYGAME_AVAILABLE and os.path.exists(ok_bp):
@@ -1457,7 +1466,7 @@ class InspectionSystem:
                         pygame.mixer.music.play(0)
                     except: pass
             
-            if "SKIP" in results:
+            elif "SKIP" in results:
                 self.update_status(f"SKIP ({pat_name})", COLOR_BG_PANEL)
         
         # 検査完了後、検査中フラグを解除してプレビュー再開
