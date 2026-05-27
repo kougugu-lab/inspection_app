@@ -22,11 +22,12 @@ from pathlib import Path
 from .constants import (
     RESULTS_DIR, RESULTS_SUBDIR_NG_RAW, COLOR_BG_MAIN, COLOR_BG_PANEL, COLOR_BG_INPUT,
     COLOR_TEXT_MAIN, COLOR_TEXT_SUB, COLOR_ACCENT, COLOR_OK, COLOR_NG, COLOR_WARNING,
-    FONT_BOLD, FONT_LARGE, FONT_HUGE, FONT_NORMAL, FONT_FAMILY, VERSION
+    FONT_BOLD, FONT_LARGE, FONT_HUGE, FONT_NORMAL, FONT_FAMILY, VERSION,
+    DELAYED_SKIP_PATTERN_ID,
 )
 from .hardware import DigitalInputDevice, OutputDevice, is_gpio_available, MockManager
 from .settings import SettingsManager
-from .widgets import create_card, Tooltip, HelpWindow, TenKeyDialog
+from .widgets import create_card, Tooltip, HelpWindow, TenKeyDialog, get_commit_display_style
 from .dialogs import SettingsDialog
 
 try:
@@ -60,6 +61,9 @@ class InspectionSystem:
 
         self.commit_number = 1
         self.ng_history = []
+        self.delay_pattern_queue = []
+        self.elapsed_cycles = 0.0
+        self.cycle_is_delayed_skip = False
         self.running = True
         self.camera_lock = threading.Lock()
         self.trigger_queue = queue.Queue()
@@ -497,8 +501,10 @@ class InspectionSystem:
                   fg=COLOR_TEXT_MAIN, width=3, relief="flat",
                   command=lambda: self.adjust_commit(-1)).pack(side=tk.LEFT)
         self.v_commit = tk.StringVar(value="0001")
-        tk.Label(cf, textvariable=self.v_commit, font=FONT_HUGE,
-                 bg=COLOR_BG_INPUT, fg=COLOR_ACCENT, width=5).pack(side=tk.LEFT, padx=10)
+        self.lbl_commit = tk.Label(cf, textvariable=self.v_commit,
+                                   bg=COLOR_BG_INPUT, fg=COLOR_ACCENT)
+        self.update_commit_display()
+        self.lbl_commit.pack(side=tk.LEFT, padx=10)
         tk.Button(cf, text="＋", font=FONT_LARGE, bg=COLOR_BG_INPUT,
                   fg=COLOR_TEXT_MAIN, width=3, relief="flat",
                   command=lambda: self.adjust_commit(1)).pack(side=tk.LEFT)
@@ -667,27 +673,48 @@ class InspectionSystem:
         t = threading.Thread(target=_thread_task, daemon=True)
         t.start()
 
+    def get_commit_str(self):
+        st_sys = self.settings.data.get("system", {})
+        is_half_step = bool(st_sys.get("commit_half_step", False))
+        if is_half_step:
+            return f"{self.commit_number:06.1f}"
+        else:
+            return f"{int(self.commit_number):04d}"
+
     def adjust_commit(self, delta):
-        self.commit_number += delta
-        if self.commit_number > 9999:
-            self.commit_number = 1
-        elif self.commit_number < 1:
-            self.commit_number = 9999
+        st_sys = self.settings.data.get("system", {})
+        is_half_step = bool(st_sys.get("commit_half_step", False))
+        step = 0.5 if is_half_step else 1.0
+
+        self.commit_number += delta * step
+        if self.commit_number > 9999.0:
+            self.commit_number = 1.0
+        elif self.commit_number < 1.0:
+            self.commit_number = 9999.0
         # UI更新はメインスレッド経由で実行（Tkinterスレッドセーフ対応）
-        self.root.after(0, lambda v=self.commit_number: self.v_commit.set(f"{v:04d}"))
+        self.root.after(0, lambda: self.v_commit.set(self.get_commit_str()))
+
+    def update_commit_display(self):
+        commit_font, commit_width = get_commit_display_style(
+            bool(self.settings.data.get("system", {}).get("commit_half_step", False))
+        )
+        self.lbl_commit.config(font=commit_font, width=commit_width)
+        self.v_commit.set(self.get_commit_str())
 
     def manual_commit_set(self):
-        d = TenKeyDialog(self.root, "コミット番号設定", self.commit_number)
+        is_half_step = bool(self.settings.data.get("system", {}).get("commit_half_step", False))
+        d = TenKeyDialog(self.root, "コミット番号設定", self.commit_number, is_half_step)
         if d.result is not None:
-            self.commit_number = d.result
-            self.v_commit.set(f"{self.commit_number:04d}")
+            self.commit_number = float(d.result)
+            self.v_commit.set(self.get_commit_str())
 
     def manual_commit_set_initial(self):
         try:
-            d = TenKeyDialog(self.root, "開始コミット番号", self.commit_number)
+            is_half_step = bool(self.settings.data.get("system", {}).get("commit_half_step", False))
+            d = TenKeyDialog(self.root, "開始コミット番号", self.commit_number, is_half_step)
             if d.result is not None:
-                self.commit_number = d.result
-                self.v_commit.set(f"{self.commit_number:04d}")
+                self.commit_number = float(d.result)
+                self.v_commit.set(self.get_commit_str())
         except Exception as e:
             self.logger.error(f"初期コミット番号設定エラー: {e}")
 
@@ -729,7 +756,13 @@ class InspectionSystem:
         dir_ng = res_dir / "images" / "NG"
 
         # 同コミット番号の全ファイルを対象に絞り込む
-        all_imgs = sorted(dir_ng.glob(f"NG_{rec['commit']:04d}_*"))
+        commit_str = rec.get("commit_str")
+        if not commit_str:
+            try:
+                commit_str = f"{int(rec['commit']):04d}"
+            except:
+                commit_str = str(rec['commit'])
+        all_imgs = sorted(dir_ng.glob(f"NG_{commit_str}_*"))
 
         # NG発生時刻が記録されていれば、同じ日付のファイルのみに絞る
         rec_time = rec.get("time")
@@ -746,12 +779,12 @@ class InspectionSystem:
             imgs = all_imgs
 
         if not imgs:
-            messagebox.showinfo("情報", f"#{rec['commit']:04d} の画像ファイルが見つかりません。\n保存先: {dir_ng}")
+            messagebox.showinfo("情報", f"#{commit_str} の画像ファイルが見つかりません。\n保存先: {dir_ng}")
             return
 
         # ---- スクロール対応の大きな画像ビューワー ----
         top = tk.Toplevel(self.root)
-        top.title(f"NG詳細 #{rec['commit']:04d} ({len(imgs)}枚)")
+        top.title(f"NG詳細 #{commit_str} ({len(imgs)}枚)")
         top.configure(bg=COLOR_BG_MAIN)
         top.transient(self.root)
 
@@ -763,7 +796,7 @@ class InspectionSystem:
         top.geometry(f"{win_w}x{win_h}")
 
         # タイトルラベル
-        tk.Label(top, text=f"NG #{rec['commit']:04d} — {len(imgs)}枚", font=FONT_LARGE,
+        tk.Label(top, text=f"NG #{commit_str} — {len(imgs)}枚", font=FONT_LARGE,
                  bg=COLOR_BG_MAIN, fg=COLOR_NG).pack(pady=(10, 0))
 
         # スクロール可能フレーム
@@ -839,11 +872,21 @@ class InspectionSystem:
         self.logger.info("設定画面を開きました。設定画面が閉じるまで検査処理をスキップします。")
         SettingsDialog(self.root, self.settings, self.on_settings_closed)
 
+    def reset_delay_pattern_queue(self):
+        """仕様情報遅延キューと経過サイクル数をリセットする"""
+        self.delay_pattern_queue.clear()
+        self.elapsed_cycles = 0.0
+        self.cycle_is_delayed_skip = False
+        if self.cycle_active_pat_id == DELAYED_SKIP_PATTERN_ID:
+            self.cycle_active_pat_id = None
+        self.logger.info("仕様情報遅延キューをリセットしました")
+
     def on_settings_closed(self):
         self.settings_open = False
         self.logger.info("設定画面が閉じられました。検査処理を再開します。")
         self.setup_hardware()
         self.v_mode.set(self.settings.data["inference"].get("mode", "inspection"))
+        self.update_commit_display()
         self.update_mode_ui()
 
     def update_mode_ui(self):
@@ -974,7 +1017,7 @@ class InspectionSystem:
 
         # ファイル名を組み立て: (判定結果)_(コミット番号)_(パターン名)_(カメラ名)_(トリガー名)_(信頼度)
         b_suffix = f"_{burst_index:02d}" if burst_index is not None else ""
-        filename = (f"{result_type}_{self.commit_number:04d}_{pattern_name}_"
+        filename = (f"{result_type}_{self.get_commit_str()}_{pattern_name}_"
                     f"{camera_name}_{trig_name}{b_suffix}_{confidence:.2f}.jpg")
 
         # ファイル名に使えない文字を除去
@@ -1006,7 +1049,7 @@ class InspectionSystem:
 
         file_exists = csv_file.exists()
         header = ["日時", "コミット番号", "パターン名", "カメラ名", "判定対象クラス名", "検出個数", "判定結果", "信頼度"]
-        data = [now_time, f"{self.commit_number:04d}", pattern_name, camera_name, class_name, detected_count, res_type, f"{confidence:.2f}"]
+        data = [now_time, self.get_commit_str(), pattern_name, camera_name, class_name, detected_count, res_type, f"{confidence:.2f}"]
 
         def _do_csv(path, row, hdr, needs_hdr):
             try:
@@ -1272,15 +1315,53 @@ class InspectionSystem:
         self.inspecting = True
 
         # 1つ目のトリガーが入った時点でその時のセレクター状態でパターンを固定する
-        if self.cycle_active_pat_id is None:
-            self.cycle_active_pat_id = self.get_current_pattern()
+        # cycle_active_pat_id が None でも、遅延SKIP中は専用IDが入るため fired_trigs で判定する
+        if self.cycle_active_pat_id is None and len(self.cycle_fired_trigs) == 0:
+            raw_pat_id = self.get_current_pattern()
+
+            # --- 遅延キュー制御 ---
+            # delay_cycles が設定されている場合、パターン情報はキューに積んで
+            # 指定サイクル後に取り出す（仕様情報の保存機能）
+            st_sys = self.settings.data.get("system", {})
+            delay_cycles = float(st_sys.get("delay_cycles", 0))
+
+            if delay_cycles > 0:
+                # キューにパターン情報を積む
+                self.delay_pattern_queue.append(raw_pat_id)
+
+                if self.elapsed_cycles < delay_cycles:
+                    # 遅延期間中: キューから消費せず、今サイクルは SKIP 扱い
+                    self.cycle_active_pat_id = DELAYED_SKIP_PATTERN_ID
+                    self.cycle_is_delayed_skip = True
+                    self.logger.info(
+                        f"[遅延キュー] 蓄積中 ({self.elapsed_cycles:.1f}/{delay_cycles:.1f} サイクル完了)。"
+                        f" キュー長={len(self.delay_pattern_queue)}"
+                    )
+                else:
+                    # 遅延完了: キューの先頭を取り出して今サイクルに適用
+                    applied_pat_id = self.delay_pattern_queue.pop(0) if self.delay_pattern_queue else None
+                    self.cycle_active_pat_id = applied_pat_id
+                    self.cycle_is_delayed_skip = False
+                    self.logger.info(
+                        f"[遅延キュー] パターン適用: {applied_pat_id}。"
+                        f" キュー残={len(self.delay_pattern_queue)}"
+                    )
+            else:
+                # 遅延なし: そのまま適用
+                self.cycle_active_pat_id = raw_pat_id
+                self.cycle_is_delayed_skip = False
+
             self.cycle_fired_trigs = set()
             self.cycle_trig_idx = 0 # 念のため
             # ログ出力はパターンの名前が確定した後で行う
 
         # 固定されたパターンを使用
         pat_id = self.cycle_active_pat_id
-        if not pat_id:
+        if (
+            not pat_id
+            or pat_id == DELAYED_SKIP_PATTERN_ID
+            or getattr(self, 'cycle_is_delayed_skip', False)
+        ):
             pat_name = "SKIP"
             is_skip = True
             # スキップ時も他のパターンと同様、全トリガーを消化してからサイクル完了とする
@@ -1373,13 +1454,22 @@ class InspectionSystem:
         if len(trig_list) <= 1:
             is_cycle_complete = True
         # 最後のトリガーを終えてインデックスが0に戻った場合も強制完了 (シーケンスの同期)
-        elif self.cycle_trig_idx == 0:
+        # トリガーリストを一周したときのみ（1回目の処理で idx==0 の誤完了を防ぐ）
+        elif self.cycle_trig_idx == 0 and len(self.cycle_fired_trigs) >= len(trig_list):
             is_cycle_complete = True
 
         if is_cycle_complete:
-            self.logger.info(f"--- サイクル完了 (#{self.commit_number:04d}) ---")
+            self.logger.info(f"--- サイクル完了 ({self.get_commit_str()}) ---")
+
+            # elapsed_cycles を 1 ステップ（0.5 or 1.0）加算
+            st_sys = self.settings.data.get("system", {})
+            is_half_step = bool(st_sys.get("commit_half_step", False))
+            cycle_step = 0.5 if is_half_step else 1.0
+            self.elapsed_cycles += cycle_step
+
             self.adjust_commit(1)    # ここで初めて次の番号へ
             self.cycle_active_pat_id = None
+            self.cycle_is_delayed_skip = False
             self.cycle_fired_trigs.clear()
             self.cycle_trig_idx = 0  # 念のためリセット
             self.clear_trigger_queue()  # サイクル完了時に余分なトリガーを破棄
@@ -1488,11 +1578,11 @@ class InspectionSystem:
     def add_history(self, trig_id):
         now = datetime.datetime.now()
         t_str = now.strftime("%m/%d %H:%M:%S")
-        commit = self.commit_number
+        commit_str = self.get_commit_str()
         # 'time' を記録しておくことで、同一コミット番号でも今回のセッションの画像のみ特定できる
-        self.ng_history.append({"commit": commit, "trigger": trig_id, "time": now})
-        # Listbox椽作はメインスレッド経由で実行（Tkinterスレッドセーフ対応）
-        self.root.after(0, lambda: self.lb_history.insert(0, f"[{t_str}] #{commit:04d} NG"))
+        self.ng_history.append({"commit": self.commit_number, "commit_str": commit_str, "trigger": trig_id, "time": now})
+        # Listbox操作はメインスレッド経由で実行（Tkinterスレッドセーフ対応）
+        self.root.after(0, lambda: self.lb_history.insert(0, f"[{t_str}] #{commit_str} NG"))
 
     def clear_trigger_queue(self):
         """トリガーキューに溜まっているイベントをすべて破棄する"""
@@ -1516,16 +1606,23 @@ class InspectionSystem:
                     continue
 
                 self.process_inspection(trig_id)
-                # --- 追加修正: キューのフラッシュ ---
-                # 撮影モードや保存処理中にチャタリングや信号の重なりで溜まった
-                # 古いトリガーイベントをすべて破棄する
+
+                # --- キューフラッシュ（余剰トリガー破棄）---
+                # ハーフステップモードでは、1つのコミット番号に対して同じトリガーが
+                # 2回入ることがある（ドアライン対応）ため、サイクル未完了の場合は
+                # キューを破棄しない（次のトリガーを待つ）。
+                # サイクルが完了した場合のみ余剰トリガーを破棄する。
                 if not self.trigger_queue.empty():
-                    self.logger.info("処理中に発生した余剰なトリガーをスキップします")
-                    while not self.trigger_queue.empty():
-                        try:
-                            self.trigger_queue.get_nowait()
-                        except queue.Empty:
-                            break
+                    cycle_just_completed = (self.cycle_active_pat_id is None and len(self.cycle_fired_trigs) == 0)
+                    if cycle_just_completed:
+                        # サイクル完了直後: 余剰なチャタリングトリガーのみ破棄
+                        self.logger.info("サイクル完了後の余剰トリガーをスキップします")
+                        while not self.trigger_queue.empty():
+                            try:
+                                self.trigger_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                    # サイクル継続中: キューを破棄せず次のトリガーを処理する
                 # ----------------------------------
             except queue.Empty:
                 pass

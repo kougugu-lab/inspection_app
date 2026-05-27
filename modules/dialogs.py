@@ -1445,8 +1445,10 @@ class SettingsDialog(tk.Toplevel):
             return l
 
         def _unit(parent, text):
-            tk.Label(parent, text=text, font=FONT_SET_VAL,
-                     bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT, padx=(2, 0))
+            lbl = tk.Label(parent, text=text, font=FONT_SET_VAL,
+                           bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
+            lbl.pack(side=tk.LEFT, padx=(2, 0))
+            return lbl
 
         def _entry_w(parent, var, width=10):
             e = self._entry(parent, var, width=width)
@@ -1698,6 +1700,101 @@ class SettingsDialog(tk.Toplevel):
 
         threading.Thread(target=_calc_storage, daemon=True).start()
 
+        # グループ6: 生産ライン同期設定
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        g6 = _make_group(scroll_f, "生産ライン同期設定")
+        st_sys = self.temp_data.setdefault("system", {})
+
+        r_step = _row_frame(g6)
+        v_step = tk.BooleanVar(value=bool(st_sys.get("commit_half_step", False)))
+        cb_step = tk.Checkbutton(
+            r_step, text="コミット番号を0.5刻みで進める (ドアライン対応)",
+            variable=v_step, onvalue=True, offvalue=False,
+            font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+            activebackground=COLOR_BG_PANEL, activeforeground=COLOR_TEXT_MAIN,
+            selectcolor=COLOR_BG_INPUT, relief="flat"
+        )
+        cb_step.pack(side=tk.LEFT)
+        Tooltip(cb_step, "ONにすると、コミット番号が1.0, 1.5, 2.0... のように0.5刻みでカウントアップされます。1つのコミット内で同じトリガーが2回入るラインに対応します。")
+        
+        def _format_delay_value(val, half_step):
+            try:
+                num = float(val)
+            except (TypeError, ValueError):
+                return "0"
+            if half_step:
+                if abs(num - round(num)) < 1e-9:
+                    return str(int(round(num)))
+                return f"{num:.1f}"
+            return str(int(num))
+
+        def _apply_delay_spinbox_mode():
+            half = v_step.get()
+            if half:
+                delay_sp.config(from_=0.0, to=99.0, increment=0.5)
+                delay_unit_lbl.config(
+                    text="サイクル（0.5刻みで設定可能、0で遅延なし）"
+                )
+            else:
+                delay_sp.config(from_=0, to=99, increment=1)
+                delay_unit_lbl.config(
+                    text="サイクル（整数のみ、0で遅延なし）"
+                )
+
+        def _upd_step(*a):
+            st_sys["commit_half_step"] = v_step.get()
+            _apply_delay_spinbox_mode()
+            if not v_step.get():
+                try:
+                    num = float(v_delay.get())
+                    if abs(num - int(num)) > 1e-9:
+                        v_delay.set(str(int(num)))
+                except (TypeError, ValueError):
+                    pass
+            self._mark_changed()
+        v_step.trace_add("write", _upd_step)
+
+        r_delay = _row_frame(g6)
+        _lbl(r_delay, "仕様情報遅延サイクル数:", "トリガー時に取得した仕様情報を、何サイクル（コミット数）後に実際の検査に適用するかを指定します。")
+        half_init = bool(st_sys.get("commit_half_step", False))
+        v_delay = tk.StringVar(value=_format_delay_value(st_sys.get("delay_cycles", 0), half_init))
+        self._last_valid_delay_str = v_delay.get()
+        self._delay_revert_guard = False
+        delay_sp = self._spinbox(r_delay, v_delay, 0.0, 99.0, 0.5, width=8)
+        delay_sp.pack(side=tk.LEFT)
+        delay_unit_lbl = _unit(r_delay, "サイクル（0.5刻みで設定可能、0で遅延なし）")
+        _apply_delay_spinbox_mode()
+
+        def _upd_delay(*a):
+            if self._delay_revert_guard:
+                return
+            val = v_delay.get().strip()
+            if val in ("", "-", ".", "-."):
+                return
+            try:
+                num = float(val)
+            except ValueError:
+                return
+            if not v_step.get():
+                if abs(num - int(num)) > 1e-9:
+                    self._delay_revert_guard = True
+                    v_delay.set(self._last_valid_delay_str)
+                    self._delay_revert_guard = False
+                    messagebox.showerror(
+                        "入力エラー",
+                        "0.5刻みモードがOFFのとき、遅延サイクル数は整数のみ指定できます。",
+                        parent=self,
+                    )
+                    return
+                st_sys["delay_cycles"] = int(num)
+                self._last_valid_delay_str = str(int(num))
+            else:
+                st_sys["delay_cycles"] = num
+                self._last_valid_delay_str = _format_delay_value(num, True)
+            self._mark_changed()
+
+        v_delay.trace_add("write", _upd_delay)
+
     # ---- 保存 / GPIO テスト ----
 
     def validate_pins(self):
@@ -1749,6 +1846,29 @@ class SettingsDialog(tk.Toplevel):
         
         return True
 
+    def _validate_delay_cycles(self):
+        """遅延サイクル数のバリデーション（0.5刻みOFF時は整数のみ）"""
+        st_sys = self.temp_data.get("system", {})
+        try:
+            delay = float(st_sys.get("delay_cycles", 0))
+        except (TypeError, ValueError):
+            messagebox.showerror(
+                "バリデーションエラー",
+                "遅延サイクル数に有効な数値を入力してください。",
+                parent=self,
+            )
+            return False
+        if not bool(st_sys.get("commit_half_step", False)):
+            if abs(delay - int(delay)) > 1e-9:
+                messagebox.showerror(
+                    "バリデーションエラー",
+                    "0.5刻みモードがOFFのとき、遅延サイクル数は整数のみ指定できます。",
+                    parent=self,
+                )
+                return False
+            st_sys["delay_cycles"] = int(delay)
+        return True
+
     def save_and_close(self):
         # バリデーション前に最新の出力ピン設定を同期
         try:
@@ -1760,6 +1880,9 @@ class SettingsDialog(tk.Toplevel):
 
         # 基本的なピンのバリデーション
         if not self.validate_pins():
+            return
+
+        if not self._validate_delay_cycles():
             return
 
         # バリデーション: 全パターンの入力ピン条件が重複していないかチェック
@@ -1795,7 +1918,10 @@ class SettingsDialog(tk.Toplevel):
 
         self.settings.data = self.temp_data
         self.settings.save_settings()
-        
+
+        if hasattr(self.master, "app_instance"):
+            self.master.app_instance.reset_delay_pattern_queue()
+
         if hasattr(self, "_live_preview_win") and self._live_preview_win.winfo_exists():
             self._live_preview_win.destroy()
             

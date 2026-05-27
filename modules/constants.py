@@ -8,7 +8,11 @@ import os
 from pathlib import Path
 
 # --- バージョン ---
-VERSION = "v3.3.9"
+VERSION = "v3.4.0"
+
+# 仕様情報遅延キュー中のサイクル（検査SKIP）を表す内部パターンID
+# None と区別し、2つ目以降のトリガーでパターン再決定されないようにする
+DELAYED_SKIP_PATTERN_ID = "__DELAYED_SKIP__"
 
 # --- ファイル・パス ---
 SETTINGS_FILE = "inspection_settings.json"

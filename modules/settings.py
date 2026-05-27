@@ -64,6 +64,10 @@ class SettingsManager:
                 "res_ng": "1920x1080",
                 "res_skip": "320x240",
                 "res_record": "1920x1080"
+            },
+            "system": {
+                "commit_half_step": False,
+                "delay_cycles": 0.0
             }
         }
         self.data = self.load_settings()

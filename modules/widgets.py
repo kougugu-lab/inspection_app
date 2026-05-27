@@ -15,6 +15,35 @@ from .constants import (
 )
 
 
+def get_tenkey_keys(is_half_step=False):
+    """テンキーの配置を返す。半角ステップ時は .5 ボタンを使用する。"""
+    decimal_key = '.5' if is_half_step else '.'
+    return [('7', 0, 0), ('8', 0, 1), ('9', 0, 2),
+            ('4', 1, 0), ('5', 1, 1), ('6', 1, 2),
+            ('1', 2, 0), ('2', 2, 1), ('3', 2, 2),
+            ('0', 3, 0), (decimal_key, 3, 1), ('BS', 3, 2)]
+
+
+def get_commit_display_style(is_half_step=False):
+    """コミット番号の表示フォントと幅を返す。"""
+    if is_half_step:
+        return FONT_LARGE, 7
+    return FONT_HUGE, 5
+
+
+def format_commit_for_tenkey(value, is_half_step=False):
+    """テンキー入力欄の初期表示用文字列を返す（1.0 → 1、1.5 はそのまま）。"""
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not is_half_step:
+        return str(int(num))
+    if abs(num - round(num)) < 1e-9:
+        return str(int(round(num)))
+    return f"{num:.1f}"
+
+
 def create_card(parent, title=None):
     """共通デザインのカードフレームを作成"""
     frame = tk.Frame(parent, bg=COLOR_BG_PANEL, bd=1, relief="flat")
@@ -150,42 +179,50 @@ class HelpWindow(tk.Toplevel):
 
 
 class TenKeyDialog(tk.Toplevel):
-    def __init__(self, parent, title, initial_value=""):
+    def __init__(self, parent, title, initial_value="", is_half_step=False):
         super().__init__(parent)
         self.title(title)
         self.result = None
-        self.geometry("350x550")
+        self.is_half_step = is_half_step
+        self.geometry("420x680")
+        self.minsize(420, 680)
         self.configure(bg=COLOR_BG_MAIN)
         self.transient(parent)
         self.lift()
         self.focus_force()
         self.after(200, self.grab_set)
 
-        self.var_value = tk.StringVar(value=str(initial_value))
+        self.var_value = tk.StringVar(value=format_commit_for_tenkey(initial_value, is_half_step))
+        display_font, display_width = get_commit_display_style(self.is_half_step)
 
         disp_f = tk.Frame(self, bg=COLOR_BG_MAIN, pady=20)
         disp_f.pack(fill=tk.X)
-        tk.Label(disp_f, textvariable=self.var_value, font=FONT_HUGE,
-                 bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat").pack(fill=tk.X, padx=20)
+        tk.Label(disp_f, textvariable=self.var_value, font=display_font,
+                 bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat",
+                 width=display_width).pack(fill=tk.X, padx=20)
 
         pad = tk.Frame(self, padx=15, pady=15, bg=COLOR_BG_MAIN)
         pad.pack(fill=tk.BOTH, expand=True)
 
-        keys = [('7', 0, 0), ('8', 0, 1), ('9', 0, 2),
-                ('4', 1, 0), ('5', 1, 1), ('6', 1, 2),
-                ('1', 2, 0), ('2', 2, 1), ('3', 2, 2),
-                ('0', 3, 0), ('BS', 3, 1), ('CLR', 3, 2)]
+        keys = get_tenkey_keys(self.is_half_step)
         for (txt, r, c) in keys:
             bg_color = COLOR_BG_PANEL
-            if txt == 'BS': bg_color = "#D32F2F"  # 濃い赤
-            if txt == 'CLR': bg_color = "#616161" # 濃いグレー
-            
+            if txt == 'BS':
+                bg_color = "#D32F2F"
+
             tk.Button(pad, text=txt, font=FONT_LARGE, bg=bg_color,
                       fg=COLOR_TEXT_MAIN, activebackground=COLOR_ACCENT,
                       activeforeground=COLOR_BG_MAIN, relief="flat", bd=0,
                       command=lambda t=txt: self.on_key(t)).grid(
                 row=r, column=c, sticky="nsew", padx=4, pady=4)
-        for i in range(4):
+
+        tk.Button(pad, text="CLR", font=FONT_LARGE, bg="#616161",
+                  fg=COLOR_TEXT_MAIN, activebackground=COLOR_ACCENT,
+                  activeforeground=COLOR_BG_MAIN, relief="flat", bd=0,
+                  command=lambda: self.on_key('CLR')).grid(
+            row=4, column=0, columnspan=3, sticky="nsew", padx=4, pady=4)
+
+        for i in range(5):
             pad.rowconfigure(i, weight=1)
         for i in range(3):
             pad.columnconfigure(i, weight=1)
@@ -206,13 +243,28 @@ class TenKeyDialog(tk.Toplevel):
             self.var_value.set("")
         elif key == 'BS':
             self.var_value.set(cur[:-1])
-        elif len(cur) < 4:
+        elif key == '.5':
+            if cur == "":
+                self.var_value.set("0.5")
+            elif '.' not in cur and len(cur) <= 4:
+                self.var_value.set(cur + '.5')
+        elif key == '.':
+            if '.' not in cur and len(cur) < 6:
+                self.var_value.set(cur + '.')
+        elif len(cur) < 6:
             self.var_value.set(cur + key)
 
     def on_enter(self):
-        val = self.var_value.get()
-        if val.isdigit():
-            self.result = int(val)
+        val = self.var_value.get().strip()
+        if val == "":
             self.destroy()
-        elif val == "":
+            return
+        
+        try:
+            if '.' in val:
+                self.result = float(val)
+            else:
+                self.result = int(val)
             self.destroy()
+        except ValueError:
+            pass
