@@ -43,6 +43,7 @@ class SettingsManager:
             "pattern_order": ["pat_1", "pat_2", "pat_3", "pat_4"],
             "inference": {
                 "threshold": 0.5,
+                "iou": 0.7,
                 "max_retries": 5,
                 "burst_interval": 0.5,
                 "result_display_time": 2.0,
@@ -52,7 +53,8 @@ class SettingsManager:
                 "save_skip_in_record": False,
                 "preview_fps": 2,
                 "ok_output_time": 0.5,
-                "ng_output_time": ""
+                "ng_output_time": "",
+                "ng_output_hold": False
             },
             "storage": {
                 "results_dir": os.path.join(os.path.expanduser("~"), "results"),

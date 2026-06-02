@@ -853,8 +853,9 @@ class InspectionSystem:
             "概要": "AIを用いた部品の欠落・個数検査システムです。\n\n【基本的な流れ】\n1. 設定画面でカメラや判定条件を整える。\n2. コミット番号を設定する。\n3. トリガー待ち状態になります。設定された順序（上から順）でトリガーが入ると、撮影・判定が行われます。",
             "検査モード": "自動判定を行う通常モードです。\n・トリガーが順番通りに入ると判定が開始されます。\n・設定された条件（個数など）を満たせばOK信号を出力します。\n・判定結果（OK/NG/SKIP）フォルダに画像を自動保存します。",
             "撮影モード": "判定を行わず、画像を収集するモードです。\n・リトライ回数分の画像を全て保存し、学習用データの収集に使用します。",
-            "コミット番号": "ファイル名に含まれる4桁の管理番号です。\n・1サイクル（全トリガー完了）ごとに自動で+1されます。\n・「番号入力」から手動設定も可能です。",
-            "NG履歴とお知らせ": "最近のNG判定が簡易表示されます。\n・ダブルクリックで画像を確認できます。\n・ステータスバーには現在の「撮影中」「検査中」などの状態が表示されます。"
+            "コミット番号": "ファイル名に含まれる管理番号です。\n・1サイクル（全トリガー完了）ごとに自動で+1されます。\n・「番号入力」から手動設定も可能です。\n・ドアライン対応: 設定局→システムタブで「0.5刻み」を有効にすると、コミット番号が0.5刻みで進みます（テンキーの「.5」ボタンで小数入力可能）。",
+            "NG履歴とお知らせ": "最近のNG判定が簡易表示されます。\n・ダブルクリックで画像を確認できます。\n・ステータスバーには現在の「撮影中」「検査中」などの状態が表示されます。",
+            "AI判定設定": "設定局→システムタブで変更できます。\n・「判定しきい値」: AIの自信度がこの値以上なら「検出した」とみなします。\n・「重複判定しきい値」: 検出した枠同士がどれくらい重なっていたら同一部品（重複）とみなすかの基準値です。値を下げると、重なりが小さくても同一部品と判定し、検出枠を1つにまとめやすくなります（デフォルト 0.7）。\n・「遅延サイクル数」: トリガー時のパターン情報をNサイクル後の検査に遅延適用します。パターン情報が次サイクル以降に確定するラインで使用します。"
         }
         HelpWindow(self.root, "操作ヘルプ", help_data)
 
@@ -1155,17 +1156,14 @@ class InspectionSystem:
         収集したフレームに対してAI推論と条件判定を行う（インクリメンタル判定）
         
         判定ロジック:
-        - 検査モード: 1回でもOK判定なら総合判定OK（以降のリトライをスキップ）
+        - 検査モード: 各カメラ個別にOKまたはSKIPとなるまでリトライ判定を行う。
+                      すべてのカメラがOKまたはSKIPを満たした時点でリトライをスキップ（早期終了）する。
         - 撮影モード: 全フレーム保存
         """
         d = self.settings.data
-        results = []
         final_best_frames = {}
         
-        # 判定結果の集計用
-        any_ok = False
-
-        # [P-3] conditions をループ外でカメラ別にキャッシュ（バーストごとの設定dict参照を削減）
+        # [P-3] conditions をループ外でカメラ別にキャッシュ
         conditions_cache = {}  # {cid: [条件リスト]}
         if not is_skip and pat_id:
             stage = self.settings.data["patterns"][pat_id]["stages"].get(trig_id, {})
@@ -1177,9 +1175,20 @@ class InspectionSystem:
                 else:
                     conditions_cache[cid] = cond_data.get(str(cid), [])
 
+        # 今回接続され動作している全カメラIDのセット
+        all_cids = set()
+        if captured_frames:
+            for cid, cam_name, frame in captured_frames[0]:
+                all_cids.add(cid)
+
+        satisfied_cameras = set()  # OKまたはSKIP判定が確定したカメラID
+
         for burst_idx, shot_group in enumerate(captured_frames):
-            shot_results = []
             for cid, cam_name, frame in shot_group:
+                # すでにOK/SKIP判定が確定しているカメラはリトライ評価しない
+                if cid in satisfied_cameras:
+                    continue
+
                 # 入力画像フレームのバリデーション（破損・空画像の排除）
                 if frame is None or not hasattr(frame, "shape") or frame.size == 0 or len(frame.shape) < 2 or frame.shape[0] == 0 or frame.shape[1] == 0:
                     self.logger.warning(
@@ -1196,13 +1205,13 @@ class InspectionSystem:
                         # サイクル中は同じコミット番号を使用、全バースト保存
                         self.save_result_images("REC", frame, cam_name, pat_name, 
                                                 trig_name=trig_name, burst_index=burst_idx + 1)
-                    shot_results.append("OK")
+                    # 撮影モードは1回の記録でsatisfiedとする
+                    satisfied_cameras.add(cid)
+                    final_best_frames[(cid, cam_name)] = (frame, frame, "OK", 0.0, "-", "0")
                 else:
                     # ---- 推論実行 ----
                     detections = {}
                     confidence = 0.0
-                    
-                    # [案B] res.plot() 遅延実行: 最良フレーム確定時のみ呼ぶためここでは保持だけする
                     _yolo_res = None
                     frame_to_save = frame
 
@@ -1215,24 +1224,22 @@ class InspectionSystem:
                     else:
                         if self.model:
                             try:
-                                # 判定閾値を取得
+                                # 判定しきい値・重複判定しきい値を取得
                                 threshold = d["inference"].get("threshold", 0.5)
+                                iou_threshold = float(d["inference"].get("iou", 0.7))
                                 # 実際のモデル推論 (ハーフ精度 + 閾値を適用)
-                                # half=True でFP16精度化 → ラズパイで推論速度50%高速化
                                 with self.model_lock:
-                                    res = self.model.predict(frame, conf=threshold, half=True, verbose=False)[0]
-                                _yolo_res = res  # plot() は最良フレーム確定後に一度だけ実行する
+                                    res = self.model.predict(frame, conf=threshold, iou=iou_threshold, half=True, verbose=False)[0]
+                                _yolo_res = res
 
-                                # クラスごとの個数を集計 (念のためここでも閾値チェック)
+                                # クラスごとの個数を集計
                                 for box in res.boxes:
                                     conf_val = float(box.conf[0])
                                     if conf_val < threshold:
                                         continue
-                                        
                                     cls_id = int(box.cls[0])
                                     cls_name = res.names[cls_id]
                                     detections[cls_name] = detections.get(cls_name, 0) + 1
-                                    # 最も高い信頼度を代表値にする
                                     confidence = max(confidence, conf_val)
 
                             except Exception as e:
@@ -1243,48 +1250,36 @@ class InspectionSystem:
                                 confidence = 0.0
                         else:
                             # モデル未設定時はシミュレーションモード
+                            import random
                             detections = {"object": 1}
                             confidence = random.uniform(0.85, 0.99)
-                            
+
                         total_detected = sum(detections.values())
-
-                        # [P-3] ループ前にキャッシュ済みの conditions を使用
                         res_type = self._evaluate_conditions(conditions, detections)
-                        if total_detected == 0:
-                            confidence = 0.00
-
                         cond_summary = ", ".join(
                             f"{c.get('class', '*')}x{c.get('count', '?')}" for c in conditions
                         ) if conditions else "-"
-                        
-                        # ログの「実際検出数」と合わせるため、全検出結果の要約を作成
                         det_summary = ", ".join(f"{k}:{v}" for k, v in detections.items()) if detections else "0"
 
-                    shot_results.append(res_type)
-                    
-                    # OK判定時はフラグを更新
-                    if res_type == "OK":
-                        any_ok = True
-                    
-                    # 最良フレーム選択（OK優先）
-                    # [案B] このフレームが保存対象になる場合のみ res.plot() を実行（描画コスト削減）
-                    if (cid, cam_name) not in final_best_frames or res_type == "OK":
+                    # 判定が OK または SKIP の場合は、このカメラの判定を確定（satisfied）とする
+                    if res_type in ("OK", "SKIP"):
+                        satisfied_cameras.add(cid)
+
+                    # 最良フレーム選択（OK優先、またはNGだった場合の最新上書き）
+                    is_first_record = (cid, cam_name) not in final_best_frames
+                    prev_was_ng = not is_first_record and final_best_frames[(cid, cam_name)][2] == "NG"
+                    if is_first_record or res_type == "OK" or prev_was_ng:
                         if _yolo_res is not None:
-                            frame_to_save = _yolo_res.plot()  # 確定時に1度だけ描画処理
+                            frame_to_save = _yolo_res.plot()
                         final_best_frames[(cid, cam_name)] = (frame_to_save, frame, res_type, confidence, cond_summary, det_summary)
 
-            if shot_results:
-                results = shot_results
-                
-                # === インクリメンタル判定ロジック ===
-                if mode == "inspection":
-                    # 1回でもOK判定があれば総合判定OK（以降のリトライをスキップ）
-                    if any_ok:
-                        self.logger.info(f"バースト撮影 {burst_idx + 1}回目でOK判定確定。以降のリトライをスキップ")
-                        break
-                    # すべてがNG（NGが続いている）なら次のリトライへ
-                    # （ただしバースト数が max_retries に達したら終了）
-                    
+            # 検査モードにおいて、すべてのカメラの判定が OK または SKIP になったらリトライスキップ（早期終了）
+            if mode == "inspection" and all_cids and all_cids.issubset(satisfied_cameras):
+                self.logger.info(f"バースト撮影 {burst_idx + 1}回目で全カメラOK/SKIP判定確定。以降のリトライをスキップ")
+                break
+
+        # 最終判定結果を集約
+        results = [val[2] for val in final_best_frames.values()]
         return results, final_best_frames
 
     def process_inspection(self, trig_id):
@@ -1495,27 +1490,29 @@ class InspectionSystem:
                 self.out_ok.off()
 
             # --- NG GPIO出力制御 ---
-            # 空白: ブザー停止ボタンを押すまで出力し続ける
-            # 0秒: 出力しない
-            # N秒: N秒間出力してから自動OFF
             if self.out_ng:
-                ng_time_str = str(ng_time).strip() if ng_time is not None else ""
-                if ng_time_str == "":
-                    # 空白設定: 常時出力（ブザー停止ボタンで手動OFF）
+                ng_hold = bool(inference_cfg.get("ng_output_hold", False))
+                if ng_hold:
+                    # 常時出力（ブザー停止ボタンで手動OFF）
                     self.out_ng.on()
                 else:
-                    try:
-                        ng_sec = float(ng_time_str)
-                        if ng_sec > 0:
-                            self.out_ng.on()
-                            ng_msec = int(ng_sec * 1000)
-                            def _ng_off():
-                                if self.out_ng:
-                                    self.out_ng.off()
-                            self.root.after(max(10, ng_msec), _ng_off)
-                        # ng_sec <= 0: 出力しない
-                    except ValueError:
-                        pass
+                    ng_time_str = str(ng_time).strip() if ng_time is not None else ""
+                    if ng_time_str == "":
+                        # 空白設定: 常時出力（ブザー停止ボタンで手動OFF）
+                        self.out_ng.on()
+                    else:
+                        try:
+                            ng_sec = float(ng_time_str)
+                            if ng_sec > 0:
+                                self.out_ng.on()
+                                ng_msec = int(ng_sec * 1000)
+                                def _ng_off():
+                                    if self.out_ng:
+                                        self.out_ng.off()
+                                self.root.after(max(10, ng_msec), _ng_off)
+                            # ng_sec <= 0: 出力しない
+                        except ValueError:
+                            pass
 
             # --- ブザー制御 ---
             bp = inference_cfg.get("buzzer_path", "")

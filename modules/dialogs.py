@@ -339,9 +339,10 @@ class SettingsDialog(tk.Toplevel):
                             "・AIモデルのパス: 推論に使用する学習済みモデルのパスを指定します。NCNN形式の場合、必ずフォルダ名の末尾を `.ncnn` にしてください（例: `best.ncnn`）。\n"
                             "・結果出力先: ログ、CSV、画像一式を保存する親フォルダの場所を絶対パスで指定します。\n"
                             "・判定しきい値: AIの自信がこの数値(0.0~1.0)以上なら「検出した」とみなします。\n"
+                             "・重複判定しきい値: 検出した枠同士の重なり具合（重複度）の基準値です。値を下げると重なりが小さくても同一部品と判定し、検出枠をまとめます。\n"
                             "・最大リトライ: 1回のトリガーで何回まで撮り直すか。撮影モードではこの回数分を全て保存します。\n"
                             "・結果表示時間: 判定後、その画像を画面に表示し続ける秒数です。\n"
-                            "・OK/NG出力時間: 信号を何秒間出し続けるかです。NGを空欄にすると「ブザー停止」まで保持します。\n"
+                            "・OK/NG出力時間: 信号を何秒間出し続けるかです。NGを空欄にするか「ブザー停止まで保持」チェックボックスをONにすると停止ボタンが押されるまで保持します。\n"
                              "・ブザー音パス: 判定時に鳴らす音声ファイルの場所を指定します。",
             "6. 容量監視": "【概要】ディスク容量不足によるシステム停止を防ぐための自動削除設定です。\n"
                            "・自動削除有効: 容量上限を超えた際、古い画像から順に自動削除します。CSVログは削除されません。\n"
@@ -1527,6 +1528,26 @@ class SettingsDialog(tk.Toplevel):
         v_thr.trace_add("write", _upd_thr)
 
 
+        # 重複判定しきい値スライダー
+        r_iou = _row_frame(g1)
+        _lbl(r_iou, "重複判定しきい値:",
+             "同じ物体を指す検出枠が重なっている場合に、どの程度重なったら一方を省くかの基準です。"
+             "値が大きいほど、かなり重なっていないと省きません（複数の枠が残りやすい）。")
+        v_iou = tk.DoubleVar(value=float(s.get("iou", 0.7)))
+        lbl_iou_val = tk.Label(r_iou, text=f"{v_iou.get():.2f}", font=FONT_SET_VAL,
+                               bg=COLOR_BG_PANEL, fg=COLOR_ACCENT, width=5)
+        lbl_iou_val.pack(side=tk.LEFT, padx=(0, 6))
+        sl_iou = ttk.Scale(r_iou, from_=0.0, to=1.0, length=200,
+                           variable=v_iou, orient="horizontal")
+        sl_iou.pack(side=tk.LEFT)
+
+        def _upd_iou(*a):
+            val = round(v_iou.get(), 2)
+            lbl_iou_val.config(text=f"{val:.2f}")
+            s["iou"] = val
+            self._mark_changed()
+        v_iou.trace_add("write", _upd_iou)
+
         # 数値パラメータ
         num_params = [
             ("最大リトライ回数:", "max_retries", "回",
@@ -1581,8 +1602,38 @@ class SettingsDialog(tk.Toplevel):
         _unit(r_ng, "sec（空欄=ブザー停止まで保持）")
         def _upd_ng_t(*a):
             val = v_ng_t.get().strip()
-            s["ng_output_time"] = float(val) if val else ""
+            try:
+                s["ng_output_time"] = float(val) if val else ""
+            except Exception:
+                pass
         v_ng_t.trace_add("write", _upd_ng_t)
+
+        # NG出力保持チェックボックス
+        r_hold = _row_frame(g2)
+        v_hold = tk.BooleanVar(value=bool(s.get("ng_output_hold", False)))
+        cb_ng_hold = tk.Checkbutton(
+            r_hold,
+            text="ブザー停止ボタンが押されるまでNG出力を保持する",
+            variable=v_hold, font=FONT_NORMAL,
+            bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+            activebackground=COLOR_BG_PANEL, activeforeground=COLOR_TEXT_MAIN,
+            selectcolor=COLOR_BG_INPUT
+        )
+        cb_ng_hold.pack(side=tk.LEFT)
+        Tooltip(cb_ng_hold, "ONにすると、NG判定時の信号出力をブザー停止ボタンが押されるまでONのまま保持します。")
+
+        def _upd_hold(*a):
+            val = v_hold.get()
+            s["ng_output_hold"] = val
+            if val:
+                ng_sp.config(state="disabled")
+            else:
+                ng_sp.config(state="normal")
+            self._mark_changed()
+        v_hold.trace_add("write", _upd_hold)
+        # 初期状態を反映（チェック済みなら出力時間を無効化）
+        if s.get("ng_output_hold", False):
+            ng_sp.config(state="disabled")
 
         # グループ3: ファイルパス
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

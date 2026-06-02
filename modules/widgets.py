@@ -16,18 +16,18 @@ from .constants import (
 
 
 def get_tenkey_keys(is_half_step=False):
-    """テンキーの配置を返す。半角ステップ時は .5 ボタンを使用する。"""
-    decimal_key = '.5' if is_half_step else '.'
+    """テンキーの配置を返す。小数点ボタンは常に .5 を使用する。"""
     return [('7', 0, 0), ('8', 0, 1), ('9', 0, 2),
             ('4', 1, 0), ('5', 1, 1), ('6', 1, 2),
             ('1', 2, 0), ('2', 2, 1), ('3', 2, 2),
-            ('0', 3, 0), (decimal_key, 3, 1), ('BS', 3, 2)]
+            ('0', 3, 0), ('.5', 3, 1), ('BS', 3, 2)]
 
 
 def get_commit_display_style(is_half_step=False):
     """コミット番号の表示フォントと幅を返す。"""
     if is_half_step:
-        return FONT_LARGE, 7
+        # 小数点表示 (0001.5) も FONT_HUGE (48pt) を維持し、幅は6
+        return FONT_HUGE, 6
     return FONT_HUGE, 5
 
 
@@ -185,7 +185,8 @@ class TenKeyDialog(tk.Toplevel):
         self.result = None
         self.is_half_step = is_half_step
         self.geometry("420x680")
-        self.minsize(420, 680)
+        self.minsize(420, 580)
+        self.resizable(True, True)
         self.configure(bg=COLOR_BG_MAIN)
         self.transient(parent)
         self.lift()
@@ -195,13 +196,24 @@ class TenKeyDialog(tk.Toplevel):
         self.var_value = tk.StringVar(value=format_commit_for_tenkey(initial_value, is_half_step))
         display_font, display_width = get_commit_display_style(self.is_half_step)
 
-        disp_f = tk.Frame(self, bg=COLOR_BG_MAIN, pady=20)
+        disp_f = tk.Frame(self, bg=COLOR_BG_MAIN, pady=15)
         disp_f.pack(fill=tk.X)
         tk.Label(disp_f, textvariable=self.var_value, font=display_font,
                  bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat",
                  width=display_width).pack(fill=tk.X, padx=20)
 
-        pad = tk.Frame(self, padx=15, pady=15, bg=COLOR_BG_MAIN)
+        # 決定/キャンセルを先に BOTTOM へ pack → 常に画面下部に表示される
+        btn_f = tk.Frame(self, bg=COLOR_BG_MAIN)
+        btn_f.pack(side=tk.BOTTOM, fill=tk.X, padx=15, pady=12)
+        tk.Button(btn_f, text="キャンセル", font=FONT_BOLD, bg="#546E7A",
+                  fg="white", relief="flat", height=2,
+                  command=self.destroy).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+        tk.Button(btn_f, text="決定", font=FONT_BOLD, bg=COLOR_ACCENT,
+                  fg="#000000", relief="flat", height=2,
+                  command=self.on_enter).pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=5)
+
+        # テンキーは残りスペースを埋める
+        pad = tk.Frame(self, padx=15, pady=10, bg=COLOR_BG_MAIN)
         pad.pack(fill=tk.BOTH, expand=True)
 
         keys = get_tenkey_keys(self.is_half_step)
@@ -227,14 +239,6 @@ class TenKeyDialog(tk.Toplevel):
         for i in range(3):
             pad.columnconfigure(i, weight=1)
 
-        btn_f = tk.Frame(self, pady=15, bg=COLOR_BG_MAIN)
-        btn_f.pack(fill=tk.X, padx=15)
-        tk.Button(btn_f, text="キャンセル", font=FONT_BOLD, bg="#546E7A",
-                  fg="white", relief="flat", height=2,
-                  command=self.destroy).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
-        tk.Button(btn_f, text="決定", font=FONT_BOLD, bg=COLOR_ACCENT,
-                  fg="#000000", relief="flat", height=2,
-                  command=self.on_enter).pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=5)
         self.wait_window(self)
 
     def on_key(self, key):
@@ -244,15 +248,13 @@ class TenKeyDialog(tk.Toplevel):
         elif key == 'BS':
             self.var_value.set(cur[:-1])
         elif key == '.5':
-            if cur == "":
-                self.var_value.set("0.5")
-            elif '.' not in cur and len(cur) <= 4:
+            # .5 は小数点がない場合のみ末尾に追加（例: "1" → "1.5"）
+            if '.' not in cur and len(cur) >= 1:
                 self.var_value.set(cur + '.5')
-        elif key == '.':
-            if '.' not in cur and len(cur) < 6:
-                self.var_value.set(cur + '.')
         elif len(cur) < 6:
-            self.var_value.set(cur + key)
+            # 数字キー: 既に .5 で終わっている場合は追加しない
+            if not cur.endswith('.5'):
+                self.var_value.set(cur + key)
 
     def on_enter(self):
         val = self.var_value.get().strip()
