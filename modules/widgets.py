@@ -44,6 +44,77 @@ def format_commit_for_tenkey(value, is_half_step=False):
     return f"{num:.1f}"
 
 
+def configure_modal_toplevel(win, parent=None):
+    """モーダル Toplevel を表示完了後に grab する（Linux/Wayland のクリック不良対策）"""
+    if parent is not None:
+        try:
+            win.transient(parent)
+        except tk.TclError:
+            pass
+
+    def _drop_topmost():
+        if win.winfo_exists():
+            try:
+                win.attributes("-topmost", False)
+            except tk.TclError:
+                pass
+
+    def _activate():
+        if not win.winfo_exists() or getattr(win, "_modal_grab_active", False):
+            return
+        win.update_idletasks()
+        try:
+            if not win.winfo_viewable():
+                return
+        except tk.TclError:
+            return
+        try:
+            if win.state() == "iconic":
+                win.deiconify()
+        except tk.TclError:
+            pass
+        try:
+            win.lift()
+            win.attributes("-topmost", True)
+            win.after(80, _drop_topmost)
+        except tk.TclError:
+            pass
+        try:
+            win.focus_force()
+        except tk.TclError:
+            pass
+        try:
+            win.grab_set()
+            win._modal_grab_active = True
+        except tk.TclError:
+            pass
+
+    def _on_map(event=None):
+        if event is not None and event.widget != win:
+            return
+        win.after_idle(_activate)
+
+    try:
+        win.attributes("-type", "dialog")
+    except tk.TclError:
+        pass
+
+    win._modal_grab_active = False
+    win.bind("<Map>", _on_map, add="+")
+    win.after_idle(_on_map)
+    # 表示が遅い環境向けフォールバック
+    win.after(500, _activate)
+
+
+def release_modal_toplevel(win):
+    """モーダル grab を解放する"""
+    try:
+        win.grab_release()
+    except tk.TclError:
+        pass
+    win._modal_grab_active = False
+
+
 def create_card(parent, title=None):
     """共通デザインのカードフレームを作成"""
     frame = tk.Frame(parent, bg=COLOR_BG_PANEL, bd=1, relief="flat")
@@ -188,10 +259,7 @@ class TenKeyDialog(tk.Toplevel):
         self.minsize(420, 580)
         self.resizable(True, True)
         self.configure(bg=COLOR_BG_MAIN)
-        self.transient(parent)
-        self.lift()
-        self.focus_force()
-        self.after(200, self.grab_set)
+        configure_modal_toplevel(self, parent)
 
         self.var_value = tk.StringVar(value=format_commit_for_tenkey(initial_value, is_half_step))
         display_font, display_width = get_commit_display_style(self.is_half_step)
@@ -207,7 +275,7 @@ class TenKeyDialog(tk.Toplevel):
         btn_f.pack(side=tk.BOTTOM, fill=tk.X, padx=15, pady=12)
         tk.Button(btn_f, text="キャンセル", font=FONT_BOLD, bg="#546E7A",
                   fg="white", relief="flat", height=2,
-                  command=self.destroy).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+                  command=self._close).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
         tk.Button(btn_f, text="決定", font=FONT_BOLD, bg=COLOR_ACCENT,
                   fg="#000000", relief="flat", height=2,
                   command=self.on_enter).pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=5)
@@ -256,17 +324,21 @@ class TenKeyDialog(tk.Toplevel):
             if not cur.endswith('.5'):
                 self.var_value.set(cur + key)
 
+    def _close(self):
+        release_modal_toplevel(self)
+        self.destroy()
+
     def on_enter(self):
         val = self.var_value.get().strip()
         if val == "":
-            self.destroy()
+            self._close()
             return
-        
+
         try:
             if '.' in val:
                 self.result = float(val)
             else:
                 self.result = int(val)
-            self.destroy()
+            self._close()
         except ValueError:
             pass

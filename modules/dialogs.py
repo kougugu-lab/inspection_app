@@ -34,7 +34,7 @@ from .constants import (
     VALID_BCM_PINS
 )
 from .hardware import DigitalInputDevice, OutputDevice
-from .widgets import create_card, Tooltip, HelpWindow
+from .widgets import create_card, Tooltip, HelpWindow, configure_modal_toplevel, release_modal_toplevel
 
 try:
     from ultralytics import YOLO
@@ -295,14 +295,12 @@ class SettingsDialog(tk.Toplevel):
         # Combobox のドロップダウンリストのフォントを大きく設定
         self.option_add("*TCombobox*Listbox.font", FONT_SET_VAL)
 
-        # Linux/Raspberry Pi (Wayland) でのフォーカス・クリック不良回避のための修正
-        self.lift()
-        self.focus_force()
-        # 画面の描画とOS側への登録が完了するのを待ってから入力を独占する (遅延が重要)
-        self.after(200, self.grab_set)
+        # Linux/Raspberry Pi (Wayland): 表示完了後に grab（未表示時の grab はクリック不能の原因）
+        configure_modal_toplevel(self, parent)
 
     def on_cancel(self):
         """キャンセル時やウィンドウを閉じた際もプレビュー再開を保証する"""
+        release_modal_toplevel(self)
         if hasattr(self, "_live_preview_win") and self._live_preview_win.winfo_exists():
             self._live_preview_win.destroy()
         if self.on_close_callback:
@@ -339,15 +337,18 @@ class SettingsDialog(tk.Toplevel):
                             "・AIモデルのパス: 推論に使用する学習済みモデルのパスを指定します。NCNN形式の場合、必ずフォルダ名の末尾を `.ncnn` にしてください（例: `best.ncnn`）。\n"
                             "・結果出力先: ログ、CSV、画像一式を保存する親フォルダの場所を絶対パスで指定します。\n"
                             "・判定しきい値: AIの自信がこの数値(0.0~1.0)以上なら「検出した」とみなします。\n"
-                             "・重複判定しきい値: 検出した枠同士の重なり具合（重複度）の基準値です。値を下げると重なりが小さくても同一部品と判定し、検出枠をまとめます。\n"
+                            "・重複判定しきい値: 検出した枠同士の重なり具合（重複度）の基準値です。値を下げると重なりが小さくても同一部品と判定し、検出枠をまとめます。\n"
                             "・最大リトライ: 1回のトリガーで何回まで撮り直すか。撮影モードではこの回数分を全て保存します。\n"
                             "・結果表示時間: 判定後、その画像を画面に表示し続ける秒数です。\n"
                             "・OK/NG出力時間: 信号を何秒間出し続けるかです。NGを空欄にするか「ブザー停止まで保持」チェックボックスをONにすると停止ボタンが押されるまで保持します。\n"
-                             "・ブザー音パス: 判定時に鳴らす音声ファイルの場所を指定します。",
-            "6. 容量監視": "【概要】ディスク容量不足によるシステム停止を防ぐための自動削除設定です。\n"
-                           "・自動削除有効: 容量上限を超えた際、古い画像から順に自動削除します。CSVログは削除されません。\n"
-                           "・最大容量上限: 指定したGB数を超えると削除を開始します。デフォルトはディスクの全容量です。\n"
-                           "・フェイルセーフ: 設定値に関わらず、ディスク全体の空き容量が1GBを切ると強制的に古い画像を削除して空きを作ります。"
+                            "・ブザー音パス: 判定時に鳴らす音声ファイルの場所を指定します。\n"
+                            "・自動削除有効: 容量上限を超えた際、古い画像から順に自動削除します。CSVログは削除されません。\n"
+                            "・最大容量上限: 指定したGB数を超えると削除を開始します。デフォルトはディスクの全容量です。\n"
+                            "　設定値に関わらず、ディスク全体の空き容量が1GBを切ると強制的に古い画像を削除して空きを作ります。\n"
+                            "生産ライン同期設定：生産ラインで検査結果を送るための外部装置やPLCと連携する設定です。\n"
+                            "・コミット番号を0.5刻みで進める：ドアラインの時にはONにして1コミットで2回トリガーが入ることに対応します。\n"
+                            "・仕様情報遅延サイクル数：GPIOピンから仕様情報を取得し、次の検査結果に同期するまでのサイクル数です。\n"
+                            "　近くにCRTがなくてもパターン情報を一時保存して、車が来たタイミングであとから呼び出せます。\n",
         }
         HelpWindow(self, "詳細設定 操作ガイド", help_data)
 
@@ -1982,7 +1983,8 @@ class SettingsDialog(tk.Toplevel):
         if hasattr(self.master, "app_instance"):
             app = self.master.app_instance
             app.preview_paused = False
-            
+
+        release_modal_toplevel(self)
         self.destroy()
 
     def open_gpio_test(self):

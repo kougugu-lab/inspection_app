@@ -871,6 +871,7 @@ class InspectionSystem:
         #     cap.release()
         self.settings_open = True
         self.logger.info("設定画面を開きました。設定画面が閉じるまで検査処理をスキップします。")
+        self.root.update_idletasks()
         SettingsDialog(self.root, self.settings, self.on_settings_closed)
 
     def reset_delay_pattern_queue(self):
