@@ -475,7 +475,9 @@ class InspectionSystem:
         cols = 2 if len(cams) >= 2 else 1
 
         for i, c in enumerate(cams):
-            f = tk.LabelFrame(self.v_frm, text=c["name"], font=FONT_BOLD,
+            # カメラ名を取得。空白のみの場合はカメラIDをフォールバックとして使用する
+            cam_display_name = (c.get("name", "") or "").strip() or str(c["id"])
+            f = tk.LabelFrame(self.v_frm, text=cam_display_name, font=FONT_BOLD,
                               bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN, bd=1, relief="solid")
             f.grid(row=i // cols, column=i % cols, sticky="nsew", padx=5, pady=5)
             l = tk.Label(f, bg="black")
@@ -1121,7 +1123,11 @@ class InspectionSystem:
         """
         captured_frames = []
         d = self.settings.data
-        cam_names = {c["id"]: c["name"] for c in d["cameras"]}
+        # カメラ名を取得。空白のみの場合はカメラIDをフォールバックとして使用する
+        cam_names = {
+            c["id"]: (c.get("name", "") or "").strip() or str(c["id"])
+            for c in d["cameras"]
+        }
 
         for shot_idx in range(max(1, retries)):
             # --- (1) すべてのカメラで grab() (フレーム取得の予約)
@@ -1283,6 +1289,20 @@ class InspectionSystem:
         results = [val[2] for val in final_best_frames.values()]
         return results, final_best_frames
 
+    def _get_trig_name(self, trig_id):
+        """トリガーIDからトリガー名を取得する（空欄や空白文字の場合はトリガーIDをフォールバックとして返す）"""
+        d = self.settings.data
+        if not d or "gpio" not in d or "triggers" not in d["gpio"]:
+            return str(trig_id)
+        trig_info = next((t for t in d["gpio"]["triggers"] if t["id"] == trig_id), None)
+        if trig_info:
+            name = trig_info.get("name", "")
+            if isinstance(name, str):
+                name = name.strip()
+            if name:
+                return name
+        return str(trig_id)
+
     def process_inspection(self, trig_id):
         """検査または撮影のメインプロセス"""
         d = self.settings.data
@@ -1298,8 +1318,8 @@ class InspectionSystem:
 
         expected_trig = trig_list[self.cycle_trig_idx]
         if trig_id != expected_trig:
-            expected_name = next((t["name"] for t in d["gpio"]["triggers"] if t["id"] == expected_trig), expected_trig)
-            received_name = next((t["name"] for t in d["gpio"]["triggers"] if t["id"] == trig_id), trig_id)
+            expected_name = self._get_trig_name(expected_trig)
+            received_name = self._get_trig_name(trig_id)
             self.logger.warning(f"順序外のトリガーを無視: 受信={received_name}, 期待={expected_name}")
             return
 
@@ -1364,7 +1384,8 @@ class InspectionSystem:
             required_trig_ids = set(trig_list)
         else:
             pat = d["patterns"][pat_id]
-            pat_name = pat["name"]
+            # パターン名を取得。空白のみの場合はパターンIDをフォールバックとして使用する
+            pat_name = pat.get("name", "").strip() or str(pat_id)
             is_skip = False
             # このパターンに必要なトリガーを取得。
             # ただし GPIO に実際に設定されているトリガーのうち、
@@ -1390,9 +1411,11 @@ class InspectionSystem:
         if self.cycle_trig_idx >= len(trig_list):
             self.cycle_trig_idx = 0 # リストの最後まで来たら先頭に戻る
 
-        # トリガー名を取得 (保存用)
+        # トリガー名を取得 (保存用ファイル名): ユーザーが設定した名前をそのまま使用する
+        # ※ dialogs.py のバリデーションにより、空白のみの名前は保存できないため通常は空にならない
+        # ※ ログ出力には _get_trig_name() を使用（IDへのフォールバック付き）
         trig_info = next((t for t in d["gpio"]["triggers"] if t["id"] == trig_id), None)
-        trig_name = trig_info["name"] if trig_info else str(trig_id)
+        trig_name = trig_info["name"].strip() if trig_info else str(trig_id)
 
         # --- 先行バースト撮影 ---
         # スキップパターン時はリトライなし（判定なしで保存のみなので1フレームのみ）
@@ -1471,7 +1494,7 @@ class InspectionSystem:
             self.clear_trigger_queue()  # サイクル完了時に余分なトリガーを破棄
         else:
             next_trig_id = trig_list[self.cycle_trig_idx]
-            next_trig_name = next((t["name"] for t in d["gpio"]["triggers"] if t["id"] == next_trig_id), str(next_trig_id))
+            next_trig_name = self._get_trig_name(next_trig_id)
             self.logger.info(f"サイクル継続中 (進捗: {len(self.cycle_fired_trigs)}/{len(required_trig_ids)}, 次待機: {next_trig_name})")
 
         # --- 出灯 / ブザー制御 (検査モードのみ) ---
@@ -1597,7 +1620,7 @@ class InspectionSystem:
 
                 # 設定画面が開いている間はトリガーを無視して検査をスキップする
                 if self.settings_open:
-                    trig_name = next((t["name"] for t in self.settings.data["gpio"]["triggers"] if t["id"] == trig_id), trig_id)
+                    trig_name = self._get_trig_name(trig_id)
                     self.logger.warning(
                         f"設定画面表示中にトリガーを受信しました（受信={trig_name}）。検査をスキップします。"
                     )

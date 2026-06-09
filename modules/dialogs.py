@@ -1930,6 +1930,51 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showerror("バリデーションエラー", "出力ピンには数値を入力してください", parent=self)
             return
 
+        # 各種名称のトリミングとバリデーション (空欄および空白文字のみの設定を防止)
+        for i, c in enumerate(self.temp_data["cameras"]):
+            name = c.get("name", "").strip()
+            if not name:
+                messagebox.showerror("バリデーションエラー", f"カメラ {i+1} の表示名が空です。有効な名前を入力してください。", parent=self)
+                return
+            c["name"] = name
+
+        for i, t in enumerate(self.temp_data["gpio"]["triggers"]):
+            name = t.get("name", "").strip()
+            if not name:
+                messagebox.showerror("バリデーションエラー", f"トリガー {i+1} の名称が空です。有効な名前を入力してください。\n(空白のみの名前は設定できません)", parent=self)
+                return
+            # ファイル名に使用できない文字のチェック
+            invalid_chars = [char for char in name if char in '<>:"/\\|?*']
+            if invalid_chars:
+                messagebox.showerror(
+                    "バリデーションエラー",
+                    f"トリガー {i+1} の名称にファイル名として使用できない文字が含まれています:\n"
+                    f"{', '.join(invalid_chars)}",
+                    parent=self
+                )
+                return
+            t["name"] = name
+
+        for i, s in enumerate(self.temp_data["gpio"].get("pattern_pins", [])):
+            name = s.get("name", "").strip()
+            if not name:
+                messagebox.showerror("バリデーションエラー", f"パターン切替ピン {i+1} の名称が空です。有効な名前を入力してください。", parent=self)
+                return
+            s["name"] = name
+
+        for pid, p in self.temp_data["patterns"].items():
+            name = p.get("name", "").strip()
+            if not name:
+                messagebox.showerror("バリデーションエラー", f"パターン 「{pid}」 の名称が空です。有効な名前を入力してください。", parent=self)
+                return
+            p["name"] = name
+
+        # パス設定のトリミング
+        if "storage" in self.temp_data and "results_dir" in self.temp_data["storage"]:
+            self.temp_data["storage"]["results_dir"] = self.temp_data["storage"]["results_dir"].strip()
+        if "inference" in self.temp_data and "model_path" in self.temp_data["inference"]:
+            self.temp_data["inference"]["model_path"] = self.temp_data["inference"]["model_path"].strip()
+
         # 基本的なピンのバリデーション
         if not self.validate_pins():
             return
