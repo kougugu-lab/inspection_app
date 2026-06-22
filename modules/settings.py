@@ -65,7 +65,8 @@ class SettingsManager:
                 "res_ok": "320x240",
                 "res_ng": "1920x1080",
                 "res_skip": "320x240",
-                "res_record": "1920x1080"
+                "res_record": "1920x1080",
+                "res_record_skip": "保存しない"
             },
             "system": {
                 "commit_half_step": False,

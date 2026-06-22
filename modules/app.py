@@ -87,6 +87,7 @@ class InspectionSystem:
         self.settings_open = False        # 設定画面表示中フラグ（設定画面が開いている間は検査を行わない）
 
         self.model = None
+        self.is_ncnn = False
         self.model_lock = threading.Lock()
         self.load_model()
 
@@ -246,6 +247,7 @@ class InspectionSystem:
         try:
             is_ncnn = path_obj.is_dir() or str(model_path).endswith(".ncnn")
             self.model = YOLO(model_path, task="detect") if is_ncnn else YOLO(model_path)
+            self.is_ncnn = is_ncnn
             fmt = "ncnn" if is_ncnn else "pt"
             self.logger.info(f"YOLOモデルをロードしました ({fmt}): {model_path}")
 
@@ -523,12 +525,15 @@ class InspectionSystem:
         tk.Label(pnl, text="NG履歴 (ダブルクリックで確認)", font=FONT_BOLD,
                  bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(pady=(10, 2))
         h_frm = tk.Frame(pnl, bg=COLOR_BG_PANEL)
-        h_frm.pack(fill=tk.BOTH, expand=True, padx=10)
+        # expand=Trueにすると横長画面では詳細設定ボタンが画面外に押し出されるため
+        # fill=tk.BOTHのみにし、Listboxのheightで最低行数を確保する
+        h_frm.pack(fill=tk.BOTH, padx=10)
 
         self.lb_history = tk.Listbox(h_frm, font=(FONT_FAMILY, 14),
                                      bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN,
                                      selectbackground=COLOR_ACCENT,
-                                     selectforeground="black", relief="flat")
+                                     selectforeground="black", relief="flat",
+                                     height=6)
         self.lb_history.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.lb_history.bind("<Double-Button-1>", self.on_history_double_click)
 
@@ -1204,16 +1209,17 @@ class InspectionSystem:
                     continue
 
                 if mode == "recording":
-                    # 撮影モード: 保存のみ（バーストごとに保存）
-                    save_needed = True
-                    if is_skip and d["storage"].get("res_record_skip", "") == "保存しない":
-                        save_needed = False
+                    # 撮影モード: バーストの全枚数を保存する
+                    # 判定対象外時（SKIPパターン、またはそのカメラ・トリガーに対する判定条件が設定されていないとき）は
+                    # 「保存しない」設定がONなら保存しない
+                    is_this_cam_skip = is_skip or not conditions_cache.get(cid, [])
+                    save_needed = not (is_this_cam_skip and d["storage"].get("res_record_skip", "") == "保存しない")
                     if save_needed:
-                        # サイクル中は同じコミット番号を使用、全バースト保存
-                        self.save_result_images("REC", frame, cam_name, pat_name, 
+                        # サイクル中は同じコミット番号を使用、バーストインデックスをファイル名に付与
+                        self.save_result_images("REC", frame, cam_name, pat_name,
                                                 trig_name=trig_name, burst_index=burst_idx + 1)
-                    # 撮影モードは1回の記録でsatisfiedとする
-                    satisfied_cameras.add(cid)
+                    # satisfied_cameras への追加は全バースト処理後（最終バーストのみ）に行う
+                    # ここでは追加しない → ループが全burst_idxを回りきるようにする
                     final_best_frames[(cid, cam_name)] = (frame, frame, "OK", 0.0, "-", "0")
                 else:
                     # ---- 推論実行 ----
@@ -1236,7 +1242,7 @@ class InspectionSystem:
                                 iou_threshold = float(d["inference"].get("iou", 0.7))
                                 # 実際のモデル推論 (ハーフ精度 + 閾値を適用)
                                 with self.model_lock:
-                                    res = self.model.predict(frame, conf=threshold, iou=iou_threshold, half=True, verbose=False)[0]
+                                    res = self.model.predict(frame, conf=threshold, iou=iou_threshold, half=not self.is_ncnn, verbose=False)[0]
                                 _yolo_res = res
 
                                 # クラスごとの個数を集計
@@ -1284,6 +1290,10 @@ class InspectionSystem:
             if mode == "inspection" and all_cids and all_cids.issubset(satisfied_cameras):
                 self.logger.info(f"バースト撮影 {burst_idx + 1}回目で全カメラOK/SKIP判定確定。以降のリトライをスキップ")
                 break
+
+        # 撮影モードの場合、全バースト保存が完了した段階で satisfied_cameras を設定する
+        if mode == "recording":
+            satisfied_cameras.update(all_cids)
 
         # 最終判定結果を集約
         results = [val[2] for val in final_best_frames.values()]
@@ -1430,9 +1440,12 @@ class InspectionSystem:
 
         # --- 保存 & 記録 ---
         if mode == "recording":
-            self.update_status(f"撮影保存完了 (#{self.commit_number:04d})", COLOR_OK)
-            # 撮影モード時は少し長めに完了表示を出し、連続動作を防ぐ（0.5秒程度）
-            time.sleep(1) 
+            # commit_number は float（0.5刻みモード対応）のため get_commit_str() を使用する
+            self.update_status(f"撮影保存完了 (#{self.get_commit_str()})", COLOR_OK)
+            # 撮影モード時は少し長めに完了表示を出し、連続動作を防ぐ
+            time.sleep(1)
+            # 撮影完了後にプレビューを再開する（inspecting フラグを解除）
+            self.inspecting = False
             self.update_status("撮影モード 待機中", COLOR_ACCENT)
         elif mode == "inspection":
             display_frames = {}
