@@ -219,6 +219,7 @@ class SettingsDialog(tk.Toplevel):
         self.geometry("1400x900")
         self.configure(bg=COLOR_BG_MAIN)
         self.temp_data = json.loads(json.dumps(self.settings.data))
+        self._sync_pattern_conditions()
         self.has_changes = False
         self.model_classes = self._get_model_classes()
         self._scan_status_var = tk.StringVar(value="")
@@ -1138,7 +1139,12 @@ class SettingsDialog(tk.Toplevel):
         
         pins = self.temp_data["gpio"].get("pattern_pins", [])
         if len(p["pin_condition"]) != len(pins):
-            p["pin_condition"] = [0] * len(pins)
+            cond = p["pin_condition"]
+            if len(cond) < len(pins):
+                cond = cond + [0] * (len(pins) - len(cond))
+            else:
+                cond = cond[:len(pins)]
+            p["pin_condition"] = cond
 
         p_grid = tk.Frame(inner1, bg=COLOR_BG_PANEL)
         p_grid.pack(anchor="w", pady=5)
@@ -1849,6 +1855,30 @@ class SettingsDialog(tk.Toplevel):
 
     # ---- 保存 / GPIO テスト ----
 
+    def _sync_pattern_conditions(self):
+        """設定データ内のパターンピン数と各パターンの条件値の長さを同期し、
+        不要な（設定順序に含まれない）パターンをクリーンアップする
+        """
+        active_pids = set(self.temp_data.get("pattern_order", []))
+        all_pids = list(self.temp_data.get("patterns", {}).keys())
+        for pid in all_pids:
+            if pid not in active_pids:
+                self.temp_data["patterns"].pop(pid, None)
+
+        pins_count = len(self.temp_data["gpio"].get("pattern_pins", []))
+        for pid in self.temp_data.get("pattern_order", []):
+            p = self.temp_data["patterns"].get(pid)
+            if not p:
+                continue
+            cond = p.get("pin_condition", [])
+            if not isinstance(cond, list):
+                cond = []
+            if len(cond) < pins_count:
+                cond = cond + [0] * (pins_count - len(cond))
+            elif len(cond) > pins_count:
+                cond = cond[:pins_count]
+            p["pin_condition"] = cond
+
     def validate_pins(self):
         """ピン番号のバリデーション（重複チェック＋有効BCMピンチェック）"""
         used_pins = {}
@@ -1982,9 +2012,13 @@ class SettingsDialog(tk.Toplevel):
         if not self._validate_delay_cycles():
             return
 
+        # 不要なパターンのクリーンアップとピン条件の同期
+        self._sync_pattern_conditions()
+
         # バリデーション: 全パターンの入力ピン条件が重複していないかチェック
         pin_map = {} # { tuple_condition: [pattern_names] }
-        for pid, p in self.temp_data["patterns"].items():
+        for pid in self.temp_data["pattern_order"]:
+            p = self.temp_data["patterns"][pid]
             cond = tuple(p.get("pin_condition", []))
             if cond not in pin_map:
                 pin_map[cond] = []

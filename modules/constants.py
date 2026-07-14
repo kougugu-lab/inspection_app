@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 # --- バージョン ---
-VERSION = "v3.4.3"
+VERSION = "v3.4.5"
 
 # 仕様情報遅延キュー中のサイクル（検査SKIP）を表す内部パターンID
 # None と区別し、2つ目以降のトリガーでパターン再決定されないようにする

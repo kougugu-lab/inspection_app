@@ -1283,7 +1283,7 @@ class InspectionSystem:
                     prev_was_ng = not is_first_record and final_best_frames[(cid, cam_name)][2] == "NG"
                     if is_first_record or res_type == "OK" or prev_was_ng:
                         if _yolo_res is not None:
-                            frame_to_save = _yolo_res.plot()
+                            frame_to_save = _yolo_res.plot(conf=threshold, iou=iou_threshold)
                         final_best_frames[(cid, cam_name)] = (frame_to_save, frame, res_type, confidence, cond_summary, det_summary)
 
             # 検査モードにおいて、すべてのカメラの判定が OK または SKIP になったらリトライスキップ（早期終了）
