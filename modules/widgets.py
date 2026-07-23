@@ -118,7 +118,7 @@ def release_modal_toplevel(win):
 def create_card(parent, title=None):
     """共通デザインのカードフレームを作成"""
     frame = tk.Frame(parent, bg=COLOR_BG_PANEL, bd=1, relief="flat")
-    inner = tk.Frame(frame, bg=COLOR_BG_PANEL, padx=15, pady=15,
+    inner = tk.Frame(frame, bg=COLOR_BG_PANEL, padx=10, pady=10,
                      highlightbackground=COLOR_BORDER, highlightthickness=1)
     inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
 

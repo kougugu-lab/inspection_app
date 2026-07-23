@@ -460,7 +460,7 @@ class InspectionSystem:
 
         # --- メインコンテンツ ---
         main = tk.Frame(self.root, bg=COLOR_BG_MAIN)
-        main.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # カメラプレビュー
         # pack_propagate(False) により、プレビュー画像のサイズに引っ張られてカメラエリアが膨張するのを抑止する
@@ -493,7 +493,7 @@ class InspectionSystem:
 
         # 操作パネル
         pnl_outer, pnl = create_card(main, "操作パネル")
-        pnl_outer.pack(side=tk.RIGHT, fill=tk.Y, padx=(20, 0))
+        pnl_outer.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
         pnl_outer.config(width=420)
         pnl_outer.pack_propagate(False)
 
@@ -519,21 +519,51 @@ class InspectionSystem:
         tk.Label(pnl, text="現在パターン", font=FONT_BOLD,
                  bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(pady=(10, 2))
         self.v_pat_name = tk.StringVar(value="---")
-        tk.Label(pnl, textvariable=self.v_pat_name, font=FONT_LARGE,
-                 bg=COLOR_BG_INPUT, fg=COLOR_ACCENT, pady=5).pack(fill=tk.X, padx=10)
 
-        tk.Label(pnl, text="NG履歴 (ダブルクリックで確認)", font=FONT_BOLD,
-                 bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(pady=(10, 2))
+        pat_frm = tk.Frame(pnl, bg=COLOR_BG_PANEL)
+        pat_frm.pack(fill=tk.X, padx=10)
+        tk.Label(pat_frm, textvariable=self.v_pat_name, font=FONT_LARGE,
+                 bg=COLOR_BG_INPUT, fg=COLOR_ACCENT, pady=5).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.btn_queue = tk.Button(pat_frm, text="以降一覧", font=FONT_NORMAL, bg="#546E7A",
+                                   fg="white", relief="flat", command=self.show_queue_list)
+        self.btn_queue.pack(side=tk.LEFT, padx=(5, 0), fill=tk.Y)
+        Tooltip(self.btn_queue, "遅延適用される待機中のパターン一覧を表示します")
+
+        # --- 操作ボタンエリア（下端に積み上げ配置） ---
+        bottom_frm = tk.Frame(pnl, bg=COLOR_BG_PANEL)
+        bottom_frm.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 5))
+
+        # 詳細設定
+        btn_settings = tk.Button(bottom_frm, text="詳細設定", font=FONT_BOLD, bg="#455A64",
+                                 fg="white", height=2, relief="flat", command=self.open_settings)
+        btn_settings.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+
+        # ブザー停止
+        btn_buzzer = tk.Button(bottom_frm, text="ブザー停止", font=FONT_BOLD, bg=COLOR_NG,
+                               fg="white", height=2, relief="flat", command=self.stop_buzzer)
+        btn_buzzer.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(10, 5))
+
+        # 履歴リセット・結果フォルダ
+        hist_btn_frm = tk.Frame(bottom_frm, bg=COLOR_BG_PANEL)
+        hist_btn_frm.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+        tk.Button(hist_btn_frm, text="履歴リセット", font=FONT_NORMAL, bg="#546E7A",
+                  fg="white", relief="flat", command=self.clear_history).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(hist_btn_frm, text="結果フォルダ", font=FONT_NORMAL, bg="#546E7A",
+                  fg="white", relief="flat", command=self.open_results_folder).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        # --- NG履歴エリア（残りスペースを可変長で埋める） ---
+        lbl_history_title = tk.Label(pnl, text="NG履歴 (ダブルクリックで確認)", font=FONT_BOLD,
+                                     bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
+        lbl_history_title.pack(side=tk.TOP, pady=(10, 2))
+
         h_frm = tk.Frame(pnl, bg=COLOR_BG_PANEL)
-        # expand=Trueにすると横長画面では詳細設定ボタンが画面外に押し出されるため
-        # fill=tk.BOTHのみにし、Listboxのheightで最低行数を確保する
-        h_frm.pack(fill=tk.BOTH, padx=10)
+        h_frm.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(0, 5))
 
         self.lb_history = tk.Listbox(h_frm, font=(FONT_FAMILY, 14),
                                      bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN,
                                      selectbackground=COLOR_ACCENT,
-                                     selectforeground="black", relief="flat",
-                                     height=6)
+                                     selectforeground="black", relief="flat")
         self.lb_history.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.lb_history.bind("<Double-Button-1>", self.on_history_double_click)
 
@@ -541,26 +571,67 @@ class InspectionSystem:
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.lb_history.config(yscrollcommand=sb.set)
 
-        hist_btn_frm = tk.Frame(pnl, bg=COLOR_BG_PANEL)
-        hist_btn_frm.pack(fill=tk.X, padx=10, pady=5)
-        tk.Button(hist_btn_frm, text="履歴リセット", font=FONT_NORMAL, bg="#546E7A",
-                  fg="white", relief="flat",
-                  command=self.clear_history).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(hist_btn_frm, text="結果フォルダ", font=FONT_NORMAL, bg="#546E7A",
-                  fg="white", relief="flat",
-                  command=self.open_results_folder).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
-
-        tk.Button(pnl, text="ブザー停止", font=FONT_BOLD, bg=COLOR_NG,
-                  fg="white", height=2, relief="flat",
-                  command=self.stop_buzzer).pack(fill=tk.X, padx=10, pady=(15, 5))
-        tk.Button(pnl, text="詳細設定", font=FONT_BOLD, bg="#455A64",
-                  fg="white", height=2, relief="flat",
-                  command=self.open_settings).pack(fill=tk.X, padx=10, pady=5)
-
         # アプリインスタンスの保持とループ開始
         self.root.app_instance = self
         threading.Thread(target=self._preview_loop, daemon=True).start()
         threading.Thread(target=self._main_logic_loop, daemon=True).start()
+
+
+    def show_queue_list(self):
+        """遅延キューに蓄積されているパターン一覧をダイアログで表示する"""
+        d = self.settings.data
+        patterns = d.get("patterns", {})
+        queue = list(self.delay_pattern_queue)
+        delay_cycles = float(d.get("system", {}).get("delay_cycles", 0))
+
+        win = tk.Toplevel(self.root)
+        win.title("遅延パターン一覧")
+        win.configure(bg=COLOR_BG_MAIN)
+        win.transient(self.root)
+        win.geometry("480x420")
+        win.resizable(True, True)
+
+        # ヘッダー
+        hdr = tk.Frame(win, bg=COLOR_BG_PANEL, pady=10)
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text="遅延キュー　待機パターン一覧", font=FONT_BOLD,
+                 bg=COLOR_BG_PANEL, fg=COLOR_ACCENT).pack(padx=20, anchor="w")
+        tk.Label(hdr, text=f"遅延サイクル数: {delay_cycles}　キュー長: {len(queue)}",
+                 font=FONT_NORMAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(padx=20, anchor="w")
+
+        # リスト
+        body = tk.Frame(win, bg=COLOR_BG_MAIN, padx=15, pady=10)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        lb_frm = tk.Frame(body, bg=COLOR_BG_MAIN)
+        lb_frm.pack(fill=tk.BOTH, expand=True)
+
+        lb = tk.Listbox(lb_frm, font=(FONT_FAMILY, 14),
+                        bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN,
+                        selectbackground=COLOR_ACCENT, selectforeground="black",
+                        relief="flat")
+        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb = tk.Scrollbar(lb_frm, orient=tk.VERTICAL, command=lb.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        lb.config(yscrollcommand=sb.set)
+
+        if not queue:
+            lb.insert(tk.END, "（待機中のパターンはありません）")
+        else:
+            for i, pid in enumerate(queue):
+                pat = patterns.get(pid)
+                if pid is None:
+                    pat_name = "（未確定 / SKIP）"
+                elif pat:
+                    pat_name = pat.get("name", pid)
+                else:
+                    pat_name = f"（不明: {pid}）"
+                lb.insert(tk.END, f"  {i + 1}. {pat_name}")
+
+        # 閉じるボタン
+        tk.Button(win, text="閉じる", font=FONT_BOLD, bg=COLOR_BG_INPUT,
+                  fg=COLOR_TEXT_MAIN, relief="flat", pady=8,
+                  command=win.destroy).pack(fill=tk.X, padx=15, pady=(0, 12))
 
     def on_closing(self):
         """アプリケーション終了時のリソース解放と安全なシャットダウン"""
@@ -1283,7 +1354,7 @@ class InspectionSystem:
                     prev_was_ng = not is_first_record and final_best_frames[(cid, cam_name)][2] == "NG"
                     if is_first_record or res_type == "OK" or prev_was_ng:
                         if _yolo_res is not None:
-                            frame_to_save = _yolo_res.plot(conf=threshold, iou=iou_threshold)
+                            frame_to_save = _yolo_res.plot(conf=threshold)
                         final_best_frames[(cid, cam_name)] = (frame_to_save, frame, res_type, confidence, cond_summary, det_summary)
 
             # 検査モードにおいて、すべてのカメラの判定が OK または SKIP になったらリトライスキップ（早期終了）
