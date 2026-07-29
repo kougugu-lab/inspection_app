@@ -1853,6 +1853,123 @@ class SettingsDialog(tk.Toplevel):
 
         v_delay.trace_add("write", _upd_delay)
 
+        # グループ7: 起動ショートカット作成
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        g7 = _make_group(scroll_f, "起動ショートカット作成")
+
+        r_sh = _row_frame(g7)
+        _lbl(r_sh, "起動スクリプト生成:", "デスクトップにワンクリックで本アプリを起動するファイルを作成します。")
+
+        def _get_desktop_path():
+            home = os.path.expanduser("~")
+            if sys.platform.startswith("win"):
+                desktop = os.path.join(home, "Desktop")
+                if os.path.exists(desktop):
+                    return desktop
+                try:
+                    import winreg
+                    key = winreg.OpenKey(
+                        winreg.HKEY_CURRENT_USER,
+                        r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+                    )
+                    path, _ = winreg.QueryValueEx(key, "Desktop")
+                    winreg.CloseKey(key)
+                    expanded = os.path.expandvars(path)
+                    if os.path.exists(expanded):
+                        return expanded
+                except Exception:
+                    pass
+                return desktop
+            else:
+                desktop = os.path.join(home, "Desktop")
+                if os.path.exists(desktop):
+                    return desktop
+                desktop_ja = os.path.join(home, "デスクトップ")
+                if os.path.exists(desktop_ja):
+                    return desktop_ja
+                user_dirs = os.path.join(home, ".config", "user-dirs.dirs")
+                if os.path.exists(user_dirs):
+                    try:
+                        with open(user_dirs, "r", encoding="utf-8") as f:
+                            for line in f:
+                                if line.startswith("XDG_DESKTOP_DIR"):
+                                    p = line.split("=")[1].strip().strip('"')
+                                    p = p.replace("$HOME", home)
+                                    if os.path.exists(p):
+                                        return p
+                    except Exception:
+                        pass
+                return desktop
+
+        def _create_desktop_launcher():
+            try:
+                desktop_dir = _get_desktop_path()
+                if not os.path.exists(desktop_dir):
+                    os.makedirs(desktop_dir, exist_ok=True)
+
+                app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+                python_exe = sys.executable
+
+                is_win = sys.platform.startswith("win")
+                if is_win:
+                    filename = "検査システム起動.bat"
+                    file_path = os.path.join(desktop_dir, filename)
+                    content = (
+                        "@echo off\n"
+                        "chcp 65001 > nul\n"
+                        "title 自動検査システム\n"
+                        f'cd /d "{app_dir}"\n'
+                        f'"{python_exe}" main.py\n'
+                        "if %errorlevel% neq 0 (\n"
+                        "    echo.\n"
+                        "    echo エラーが発生しました。キーを押すと終了します...\n"
+                        "    pause > nul\n"
+                        ")\n"
+                    )
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                else:
+                    filename = "検査システム起動.sh"
+                    file_path = os.path.join(desktop_dir, filename)
+                    content = (
+                        "#!/bin/bash\n"
+                        f'cd "{app_dir}"\n'
+                        f'"{python_exe}" main.py\n'
+                        "if [ $? -ne 0 ]; then\n"
+                        '    read -p "エラーが発生しました。Enterキーを押すと終了します..."\n'
+                        "fi\n"
+                    )
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    try:
+                        os.chmod(file_path, 0o755)
+                    except Exception:
+                        pass
+
+                messagebox.showinfo(
+                    "ショートカット作成完了",
+                    f"デスクトップに起動スクリプトを作成しました:\n\n{file_path}",
+                    parent=self
+                )
+            except Exception as ex:
+                messagebox.showerror(
+                    "作成失敗",
+                    f"起動スクリプトの作成中にエラーが発生しました:\n{ex}",
+                    parent=self
+                )
+
+        is_win = sys.platform.startswith("win")
+        btn_text = "デスクトップに起動ファイルを作成 (.bat)" if is_win else "デスクトップに起動ファイルを作成 (.sh)"
+
+        btn_shortcut = tk.Button(
+            r_sh, text=btn_text, font=FONT_NORMAL,
+            bg=COLOR_ACCENT, fg="white",
+            relief="flat", padx=10, pady=4, cursor="hand2",
+            command=_create_desktop_launcher
+        )
+        btn_shortcut.pack(side=tk.LEFT, padx=(0, 6))
+        Tooltip(btn_shortcut, f"デスクトップに本アプリを起動する{'batch (.bat)' if is_win else 'shell (.sh)'}ファイルを作成します")
+
     # ---- 保存 / GPIO テスト ----
 
     def _sync_pattern_conditions(self):
