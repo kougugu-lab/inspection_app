@@ -67,6 +67,7 @@ class InspectionSystem:
         self.running = True
         self.camera_lock = threading.Lock()
         self.trigger_queue = queue.Queue()
+        self.last_trigger_time = 0.0
         self.caps = {}
         self.last_frames = {}  # 各カメラの最新フレーム保持用 (設定画面のプレビュー等で使用)
         self.inputs = {}
@@ -727,19 +728,32 @@ class InspectionSystem:
                 self.logger.info(f"[容量監視] 削除開始。画像サイズ: {total_size/(1024**3):.2f} GB / 空き容量: {free_gb:.2f} GB")
 
                 deleted_count = 0
+                first_deleted = None
+                last_deleted = None
+
                 for f in img_files:
                     if total_size <= target_bytes:
                         break
                     try:
                         file_size = f.stat().st_size
+                        f_name = f.name
                         f.unlink()
                         total_size -= file_size
                         deleted_count += 1
+
+                        if first_deleted is None:
+                            first_deleted = f_name
+                        last_deleted = f_name
+
                     except Exception as e:
                         self.logger.warning(f"[容量監視] 削除失敗: {f.name} - {e}")
 
                 if deleted_count > 0:
-                    self.logger.info(f"[容量監視] {deleted_count} 件削除完了。残画像サイズ: {total_size/(1024**3):.2f} GB")
+                    self.logger.info(
+                        f"[容量監視] {deleted_count} 件の画像を削除完了。"
+                        f" (削除範囲: {first_deleted} ～ {last_deleted})。"
+                        f" 残画像サイズ: {total_size/(1024**3):.2f} GB"
+                    )
             except Exception as e:
                 self.logger.error(f"[容量監視] エラー: {e}")
             finally:
@@ -1439,8 +1453,16 @@ class InspectionSystem:
                     applied_pat_id = self.delay_pattern_queue.pop(0) if self.delay_pattern_queue else None
                     self.cycle_active_pat_id = applied_pat_id
                     self.cycle_is_delayed_skip = False
+
+                    # ログ用に設定されたパターン名を取得
+                    applied_pat_name = "SKIP"
+                    if applied_pat_id and applied_pat_id in d.get("patterns", {}):
+                        applied_pat_name = d["patterns"][applied_pat_id].get("name", "").strip() or str(applied_pat_id)
+                    elif applied_pat_id:
+                        applied_pat_name = str(applied_pat_id)
+
                     self.logger.info(
-                        f"[遅延キュー] パターン適用: {applied_pat_id}。"
+                        f"[遅延キュー] パターン適用: {applied_pat_name} (ID: {applied_pat_id})。"
                         f" キュー残={len(self.delay_pattern_queue)}"
                     )
             else:
@@ -1698,6 +1720,7 @@ class InspectionSystem:
                 break
 
     def _main_logic_loop(self):
+        import time
         while self.running:
             try:
                 trig_id = self.trigger_queue.get(timeout=1.0)
@@ -1710,6 +1733,28 @@ class InspectionSystem:
                     )
                     continue
 
+                # デバウンス（最小トリガー間隔）保護チェック
+                d = self.settings.data
+                debounce_sec = float(d.get("inference", {}).get("trigger_debounce_sec", 3.0))
+                now_t = time.time()
+                time_diff = now_t - self.last_trigger_time
+
+                if self.last_trigger_time > 0 and time_diff < debounce_sec:
+                    trig_name = self._get_trig_name(trig_id)
+                    self.logger.warning(
+                        f"二重トリガーを破棄しました（デバウンス保護: {time_diff:.2f}s < {debounce_sec:.2f}s, 受信={trig_name}）"
+                    )
+                    continue
+
+                # 現在判定処理中の場合の重複トリガーガード
+                if self.inspecting:
+                    trig_name = self._get_trig_name(trig_id)
+                    self.logger.warning(
+                        f"検査処理中に重複トリガーを受信しました（受信={trig_name}）。破棄します。"
+                    )
+                    continue
+
+                self.last_trigger_time = now_t
                 self.process_inspection(trig_id)
 
                 # --- キューフラッシュ（余剰トリガー破棄）---

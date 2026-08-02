@@ -50,6 +50,7 @@ class SettingsManager:
                 "model_path": os.path.join(os.path.expanduser("~"), "models/rubber_best.pt"),
                 "buzzer_path": "",
                 "mode": "inspection",
+                "trigger_debounce_sec": 3.0,
                 "save_skip_in_record": False,
                 "preview_fps": 2,
                 "ok_output_time": 0.5,

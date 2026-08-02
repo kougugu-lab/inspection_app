@@ -7,6 +7,7 @@ GPIOTestDialog, SettingsDialog
 
 import json
 import os
+import sys
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -1557,6 +1558,8 @@ class SettingsDialog(tk.Toplevel):
 
         # 数値パラメータ
         num_params = [
+            ("トリガー不感時間 (デバウンス):", "trigger_debounce_sec", "sec",
+             "連続して信号が入った場合に二重検出を防止する最小インターバル秒数です。3.0秒推奨。", 0.0, 10.0, 0.1),
             ("最大リトライ回数:", "max_retries", "回",
              "1回のトリガーで最大何回まで撮り直しますか。", 0, 99, 1),
             ("撮影間隔:", "burst_interval", "sec",
