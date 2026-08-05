@@ -45,6 +45,172 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# システム日時設定ダイアログ
+# ---------------------------------------------------------------------------
+class SystemDateTimeDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("本体日時設定 (システムクロック設定)")
+        self.geometry("560x490")
+        self.configure(bg=COLOR_BG_MAIN)
+        self.transient(parent)
+        self.grab_set()
+
+        try:
+            configure_modal_toplevel(self)
+        except Exception:
+            pass
+
+        from datetime import datetime
+        now = datetime.now()
+
+        # 最下部ボタンエリア (side=BOTTOM で固定配置することで縦潰れを完全防止)
+        f_btns = tk.Frame(self, bg=COLOR_BG_MAIN)
+        f_btns.pack(side=tk.BOTTOM, fill=tk.X, pady=20, padx=24)
+
+        def _apply():
+            try:
+                y = self.v_year.get()
+                m = self.v_month.get()
+                d = self.v_day.get()
+                h = self.v_hour.get()
+                mi = self.v_min.get()
+                s = self.v_sec.get()
+                dt_str = f"{y:04d}-{m:02d}-{d:02d} {h:02d}:{mi:02d}:{s:02d}"
+            except Exception as ex:
+                messagebox.showerror("入力エラー", f"日時の入力値が不正です:\n{ex}", parent=self)
+                return
+
+            if sys.platform.startswith("win"):
+                messagebox.showinfo(
+                    "日時設定 (Windows)",
+                    f"Windows環境のため実際のシステム時刻変更はスキップされました。\n設定指定値: {dt_str}\n(Linux/ラズパイ環境で自動設定コマンドが実行されます)",
+                    parent=self
+                )
+                self.destroy()
+                return
+
+            import subprocess
+            cmds = [
+                ["sudo", "timedatectl", "set-ntp", "false"],
+                ["sudo", "timedatectl", "set-time", dt_str],
+                ["sudo", "date", "-s", dt_str],
+                ["sudo", "hwclock", "-w"]
+            ]
+            results = []
+            success_count = 0
+            for cmd in cmds:
+                try:
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                    if res.returncode == 0:
+                        success_count += 1
+                        results.append(f"成功: {' '.join(cmd)}")
+                    else:
+                        err = res.stderr.strip() or res.stdout.strip()
+                        results.append(f"失敗 ({' '.join(cmd)}): {err}")
+                except Exception as ex:
+                    results.append(f"エラー ({' '.join(cmd)}): {ex}")
+
+            msg = f"日時を [{dt_str}] に設定しました。\n\n【実行詳細】\n" + "\n".join(results)
+            if success_count > 0:
+                messagebox.showinfo("日時設定完了", msg, parent=self)
+                self.destroy()
+            else:
+                messagebox.showerror("日時設定失敗", msg, parent=self)
+
+        btn_save = tk.Button(
+            f_btns, text="日時を本体に反映", font=(FONT_FAMILY, 11, "bold"),
+            bg=COLOR_ACCENT, fg="white", relief="flat", padx=20, pady=8,
+            cursor="hand2", command=_apply
+        )
+        btn_save.pack(side=tk.RIGHT, padx=(10, 0))
+
+        btn_cancel = tk.Button(
+            f_btns, text="キャンセル", font=(FONT_FAMILY, 11, "bold"),
+            bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN, relief="flat", padx=18, pady=8,
+            cursor="hand2", command=self.destroy
+        )
+        btn_cancel.pack(side=tk.RIGHT)
+
+        # ヘッダータイトル & 説明
+        tk.Label(
+            self, text="ラズパイ本体の日時設定", font=FONT_LARGE,
+            bg=COLOR_BG_MAIN, fg=COLOR_ACCENT
+        ).pack(pady=(20, 6))
+
+        tk.Label(
+            self, text="本体のシステム日付・時刻を設定します。\n(Linux / Raspberry Pi 環境で timedatectl / date が更新されます)",
+            font=FONT_SET_VAL, bg=COLOR_BG_MAIN, fg=COLOR_TEXT_SUB, justify="center",
+            wraplength=500
+        ).pack(pady=(0, 16), padx=20)
+
+        # 入力フレーム
+        f_dt = tk.Frame(self, bg=COLOR_BG_PANEL, padx=20, pady=20)
+        f_dt.pack(padx=24, fill=tk.X, expand=True)
+
+        font_num = (FONT_FAMILY, 14, "bold")
+        font_lbl = (FONT_FAMILY, 12, "bold")
+
+        # 年月日
+        f_date = tk.Frame(f_dt, bg=COLOR_BG_PANEL)
+        f_date.pack(fill=tk.X, pady=8)
+        
+        self.v_year = tk.IntVar(value=now.year)
+        self.v_month = tk.IntVar(value=now.month)
+        self.v_day = tk.IntVar(value=now.day)
+
+        tk.Label(f_date, text="日付:", font=font_lbl, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN, width=6, anchor="w").pack(side=tk.LEFT)
+        sp_y = ttk.Spinbox(f_date, from_=2020, to=2099, increment=1, textvariable=self.v_year, width=6, font=font_num)
+        sp_y.pack(side=tk.LEFT, padx=4)
+        tk.Label(f_date, text="年", font=font_lbl, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN).pack(side=tk.LEFT, padx=(0, 10))
+
+        sp_m = ttk.Spinbox(f_date, from_=1, to=12, increment=1, textvariable=self.v_month, width=4, font=font_num)
+        sp_m.pack(side=tk.LEFT, padx=4)
+        tk.Label(f_date, text="月", font=font_lbl, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN).pack(side=tk.LEFT, padx=(0, 10))
+
+        sp_d = ttk.Spinbox(f_date, from_=1, to=31, increment=1, textvariable=self.v_day, width=4, font=font_num)
+        sp_d.pack(side=tk.LEFT, padx=4)
+        tk.Label(f_date, text="日", font=font_lbl, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN).pack(side=tk.LEFT)
+
+        # 時分秒
+        f_time = tk.Frame(f_dt, bg=COLOR_BG_PANEL)
+        f_time.pack(fill=tk.X, pady=8)
+
+        self.v_hour = tk.IntVar(value=now.hour)
+        self.v_min = tk.IntVar(value=now.minute)
+        self.v_sec = tk.IntVar(value=now.second)
+
+        tk.Label(f_time, text="時刻:", font=font_lbl, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN, width=6, anchor="w").pack(side=tk.LEFT)
+        sp_h = ttk.Spinbox(f_time, from_=0, to=23, increment=1, textvariable=self.v_hour, width=4, font=font_num)
+        sp_h.pack(side=tk.LEFT, padx=4)
+        tk.Label(f_time, text="時", font=font_lbl, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN).pack(side=tk.LEFT, padx=(0, 10))
+
+        sp_mi = ttk.Spinbox(f_time, from_=0, to=59, increment=1, textvariable=self.v_min, width=4, font=font_num)
+        sp_mi.pack(side=tk.LEFT, padx=4)
+        tk.Label(f_time, text="分", font=font_lbl, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN).pack(side=tk.LEFT, padx=(0, 10))
+
+        sp_s = ttk.Spinbox(f_time, from_=0, to=59, increment=1, textvariable=self.v_sec, width=4, font=font_num)
+        sp_s.pack(side=tk.LEFT, padx=4)
+        tk.Label(f_time, text="秒", font=font_lbl, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN).pack(side=tk.LEFT)
+
+        def _set_current():
+            n = datetime.now()
+            self.v_year.set(n.year)
+            self.v_month.set(n.month)
+            self.v_day.set(n.day)
+            self.v_hour.set(n.hour)
+            self.v_min.set(n.minute)
+            self.v_sec.set(n.second)
+
+        btn_now = tk.Button(
+            f_dt, text="現在端末の時刻をセット", font=(FONT_FAMILY, 11, "bold"),
+            bg=COLOR_BG_INPUT, fg=COLOR_ACCENT, relief="flat", padx=16, pady=6,
+            cursor="hand2", command=_set_current
+        )
+        btn_now.pack(pady=(14, 4))
+
+
+# ---------------------------------------------------------------------------
 # GPIO テストダイアログ
 # ---------------------------------------------------------------------------
 class GPIOTestDialog(tk.Toplevel):
@@ -1439,6 +1605,12 @@ class SettingsDialog(tk.Toplevel):
             outer.pack(fill=tk.X, padx=20, pady=pady)
             return inner
 
+        def _section_title(parent, text):
+            lbl = tk.Label(parent, text=text, font=FONT_SET_LBL,
+                           bg=COLOR_BG_PANEL, fg=COLOR_ACCENT, anchor="w")
+            lbl.pack(fill=tk.X, padx=4, pady=(10, 4))
+            return lbl
+
         def _row_frame(parent, column_widths=(280, 1)):
             f = tk.Frame(parent, bg=COLOR_BG_PANEL)
             f.pack(fill=tk.X, pady=4)
@@ -1507,9 +1679,10 @@ class SettingsDialog(tk.Toplevel):
             Tooltip(btn, "設定した音声を1回再生して確認します")
             return btn
 
-        # グループ1: AI判定設定
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        g1 = _make_group(scroll_f, "AI判定設定", pady=(16, 4))
+        # =====================================================================
+        # 1. AI・推論パラメータ設定
+        # =====================================================================
+        g1 = _make_group(scroll_f, "AI・推論パラメータ設定", pady=(16, 6))
 
         # しきい値スライダー
         r_thr = _row_frame(g1)
@@ -1521,7 +1694,6 @@ class SettingsDialog(tk.Toplevel):
         sl = ttk.Scale(r_thr, from_=0.0, to=1.0, length=200,
                        variable=v_thr, orient="horizontal")
         sl.pack(side=tk.LEFT)
-        # ライブプレビューボタン（スライダー値で即座にYOLO結果を確認）
         btn_live = tk.Button(r_thr, text="ライブ", font=FONT_NORMAL,
                               bg="#546E7A", fg="white", relief="flat", cursor="hand2",
                               command=lambda: self._update_threshold_preview(round(v_thr.get(), 2), recursive=False))
@@ -1534,7 +1706,6 @@ class SettingsDialog(tk.Toplevel):
             s["threshold"] = val
             self._mark_changed()
         v_thr.trace_add("write", _upd_thr)
-
 
         # 重複判定しきい値スライダー
         r_iou = _row_frame(g1)
@@ -1558,7 +1729,7 @@ class SettingsDialog(tk.Toplevel):
 
         # 数値パラメータ
         num_params = [
-            ("トリガー不感時間 (デバウンス):", "trigger_debounce_sec", "sec",
+            ("トリガー不感時間:", "trigger_debounce_sec", "sec",
              "連続して信号が入った場合に二重検出を防止する最小インターバル秒数です。3.0秒推奨。", 0.0, 10.0, 0.1),
             ("最大リトライ回数:", "max_retries", "回",
              "1回のトリガーで最大何回まで撮り直しますか。", 0, 99, 1),
@@ -1587,9 +1758,12 @@ class SettingsDialog(tk.Toplevel):
                 return _upd
             v.trace_add("write", _mk_upd())
 
-        # グループ2: 出力制御
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        g2 = _make_group(scroll_f, "出力制御")
+        # =====================================================================
+        # 2. 出力制御 & 生産ライン同期
+        # =====================================================================
+        g2 = _make_group(scroll_f, "出力制御 & 生産ライン同期", pady=(10, 6))
+
+        _section_title(g2, "▼ 信号出力制御")
 
         r_ok = _row_frame(g2)
         _lbl(r_ok, "OK出力時間:", "OK判定後、出力信号をONにし続ける秒数です。")
@@ -1618,7 +1792,6 @@ class SettingsDialog(tk.Toplevel):
                 pass
         v_ng_t.trace_add("write", _upd_ng_t)
 
-        # NG出力保持チェックボックス
         r_hold = _row_frame(g2)
         v_hold = tk.BooleanVar(value=bool(s.get("ng_output_hold", False)))
         cb_ng_hold = tk.Checkbutton(
@@ -1641,132 +1814,14 @@ class SettingsDialog(tk.Toplevel):
                 ng_sp.config(state="normal")
             self._mark_changed()
         v_hold.trace_add("write", _upd_hold)
-        # 初期状態を反映（チェック済みなら出力時間を無効化）
         if s.get("ng_output_hold", False):
             ng_sp.config(state="disabled")
 
-        # グループ3: ファイルパス
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        g3 = _make_group(scroll_f, "ファイルパス設定")
+        _section_title(g2, "▼ 生産ライン同期")
 
-        # 結果出力先
-        r_res = _row_frame(g3)
-        _lbl(r_res, "結果出力先フォルダ:", "ログ・CSV・保存画像の親フォルダを絶対パスで指定します。")
-        vp = tk.StringVar(value=self.temp_data["storage"].get("results_dir", ""))
-        _entry_w(r_res, vp, width=40)
-        _browse_btn(r_res, vp, mode="dir")
-        vp.trace_add("write", lambda *a: self.temp_data["storage"].update({"results_dir": vp.get()}))
-
-        # AIモデルパス (.pt ファイル または ncnn フォルダ)
-        r_mdl = _row_frame(g3)
-        _lbl(r_mdl, "AIモデルパス:",
-             "推論に使用するYOLOモデルを指定します。\n"
-             "・.pt ファイル: 「.pt参照」ボタンでファイルを選択\n"
-             "・ncnnモデル: 「ncnnフォルダ参照」ボタンでフォルダを選択")
-        vm = tk.StringVar(value=s.get("model_path", ""))
-        _entry_w(r_mdl, vm, width=35)
-        # .pt ファイル選択ボタン
-        _browse_btn(r_mdl, vm, mode="file",
-                    filetypes=[("PyTorch モデル", "*.pt"), ("すべてのファイル", "*.*")])
-        # ncnn フォルダ選択ボタン
-        def _pick_ncnn():
-            p = filedialog.askdirectory(title="ncnnモデルフォルダを選択", parent=self)
-            if p:
-                vm.set(p)
-        btn_ncnn = tk.Button(r_mdl, text="ncnnフォルダ", font=FONT_NORMAL,
-                             bg=COLOR_BG_INPUT, fg=COLOR_ACCENT,
-                             relief="flat", padx=6, pady=2, cursor="hand2",
-                             command=_pick_ncnn)
-        btn_ncnn.pack(side=tk.LEFT, padx=(4, 0))
-        Tooltip(btn_ncnn, "ncnn形式のモデルフォルダ(*.ncnnディレクトリ)を選択します")
-        vm.trace_add("write", lambda *a: s.update({"model_path": vm.get()}))
-
-        # グループ4: 音声設定
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        g4 = _make_group(scroll_f, "音声設定")
-
-        # NGブザー
-        r_bng = _row_frame(g4)
-        _lbl(r_bng, "NG時ブザー音:", "NG判定時に再生する音声ファイルです。空欄で無効。")
-        vb = tk.StringVar(value=s.get("buzzer_path", ""))
-        _entry_w(r_bng, vb, width=35)
-        _browse_btn(r_bng, vb, mode="file",
-                    filetypes=[("音声ファイル", "*.mp3 *.wav *.ogg"), ("すべて", "*.*")])
-        _play_btn(r_bng, vb)
-        vb.trace_add("write", lambda *a: s.update({"buzzer_path": vb.get()}))
-
-        # OKブザー
-        r_bok = _row_frame(g4)
-        _lbl(r_bok, "OK時ブザー音:", "OK判定時に再生する音声ファイルです。空欄で無効。")
-        vob = tk.StringVar(value=s.get("ok_buzzer_path", ""))
-        _entry_w(r_bok, vob, width=35)
-        _browse_btn(r_bok, vob, mode="file",
-                    filetypes=[("音声ファイル", "*.mp3 *.wav *.ogg"), ("すべて", "*.*")])
-        _play_btn(r_bok, vob)
-        vob.trace_add("write", lambda *a: s.update({"ok_buzzer_path": vob.get()}))
-
-        # グループ5: 容量監視（自動削除）
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        g5 = _make_group(scroll_f, "容量監視 / 自動削除")
-
-        st = self.temp_data["storage"]
-
-        r_ad = _row_frame(g5)
-        v_ad = tk.BooleanVar(value=bool(st.get("auto_delete_enabled", False)))
-        cb = tk.Checkbutton(
-            r_ad, text="古い結果画像を自動削除する",
-            variable=v_ad, onvalue=True, offvalue=False,
-            font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
-            activebackground=COLOR_BG_PANEL, activeforeground=COLOR_TEXT_MAIN,
-            selectcolor=COLOR_BG_INPUT, relief="flat"
-        )
-        cb.pack(side=tk.LEFT)
-        Tooltip(cb, "容量が上限を超えると、保存フォルダ内の古い画像から順番に自動削除します。\nCSVログやモデルファイルは削除されません。")
-        v_ad.trace_add("write", lambda *a: st.update({"auto_delete_enabled": v_ad.get()}))
-
-        r_mg = _row_frame(g5)
-        _lbl(r_mg, "最大容量上限:", "この容量を超えると古い画像から自動削除します。")
-        v_mg = tk.StringVar(value=str(st.get("max_results_gb", "")))
-        mg_sp = self._spinbox(r_mg, v_mg, 0.1, 9999.0, 1.0, width=8)
-        mg_sp.pack(side=tk.LEFT)
-        _unit(r_mg, "GB")
-        def _upd_mg(*a):
-            try:
-                st["max_results_gb"] = float(v_mg.get())
-            except Exception:
-                pass
-        v_mg.trace_add("write", _upd_mg)
-
-        # 現在の使用量表示 (非同期計算)
-        v_used = tk.StringVar(value="現在の使用量: 計算中...")
-        lbl_used = tk.Label(g5, textvariable=v_used, font=FONT_SET_VAL,
-                            bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, anchor="w")
-        lbl_used.pack(fill=tk.X, pady=(4, 0))
-
-        def _calc_storage():
-            import shutil as _shutil
-            _res_dir = st.get("results_dir", "")
-            try:
-                if _res_dir and os.path.exists(_res_dir):
-                    # 大量ファイル走査のためスレッド実行
-                    _used = sum(f.stat().st_size for f in Path(_res_dir).rglob('*') if f.is_file())
-                    _used_gb = _used / (1024**3)
-                    _total_gb = _shutil.disk_usage(_res_dir).total / (1024**3)
-                    msg = f"現在の使用量: {_used_gb:.2f} GB / ディスク合計: {_total_gb:.1f} GB"
-                    self.after(0, lambda: v_used.set(msg))
-                else:
-                    self.after(0, lambda: v_used.set("現在の使用量: -"))
-            except Exception:
-                self.after(0, lambda: v_used.set("(使用量の取得に失敗しました)"))
-
-        threading.Thread(target=_calc_storage, daemon=True).start()
-
-        # グループ6: 生産ライン同期設定
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        g6 = _make_group(scroll_f, "生産ライン同期設定")
         st_sys = self.temp_data.setdefault("system", {})
 
-        r_step = _row_frame(g6)
+        r_step = _row_frame(g2)
         v_step = tk.BooleanVar(value=bool(st_sys.get("commit_half_step", False)))
         cb_step = tk.Checkbutton(
             r_step, text="コミット番号を0.5刻みで進める (ドアライン対応)",
@@ -1815,7 +1870,7 @@ class SettingsDialog(tk.Toplevel):
             self._mark_changed()
         v_step.trace_add("write", _upd_step)
 
-        r_delay = _row_frame(g6)
+        r_delay = _row_frame(g2)
         _lbl(r_delay, "仕様情報遅延サイクル数:", "トリガー時に取得した仕様情報を、何サイクル（コミット数）後に実際の検査に適用するかを指定します。")
         half_init = bool(st_sys.get("commit_half_step", False))
         v_delay = tk.StringVar(value=_format_delay_value(st_sys.get("delay_cycles", 0), half_init))
@@ -1856,11 +1911,123 @@ class SettingsDialog(tk.Toplevel):
 
         v_delay.trace_add("write", _upd_delay)
 
-        # グループ7: 起動ショートカット作成
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        g7 = _make_group(scroll_f, "起動ショートカット作成")
+        # =====================================================================
+        # 3. ファイルパス & 容量自動管理
+        # =====================================================================
+        g3 = _make_group(scroll_f, "ファイルパス & 容量自動管理", pady=(10, 6))
 
-        r_sh = _row_frame(g7)
+        _section_title(g3, "▼ ファイル・モデルパス")
+
+        r_res = _row_frame(g3)
+        _lbl(r_res, "結果出力先フォルダ:", "ログ・CSV・保存画像の親フォルダを絶対パスで指定します。")
+        vp = tk.StringVar(value=self.temp_data["storage"].get("results_dir", ""))
+        _entry_w(r_res, vp, width=40)
+        _browse_btn(r_res, vp, mode="dir")
+        vp.trace_add("write", lambda *a: self.temp_data["storage"].update({"results_dir": vp.get()}))
+
+        r_mdl = _row_frame(g3)
+        _lbl(r_mdl, "AIモデルパス:",
+             "推論に使用するYOLOモデルを指定します。\n"
+             "・.pt ファイル: 「.pt参照」ボタンでファイルを選択\n"
+             "・ncnnモデル: 「ncnnフォルダ参照」ボタンでフォルダを選択")
+        vm = tk.StringVar(value=s.get("model_path", ""))
+        _entry_w(r_mdl, vm, width=35)
+        _browse_btn(r_mdl, vm, mode="file",
+                    filetypes=[("PyTorch モデル", "*.pt"), ("すべてのファイル", "*.*")])
+        def _pick_ncnn():
+            p = filedialog.askdirectory(title="ncnnモデルフォルダを選択", parent=self)
+            if p:
+                vm.set(p)
+        btn_ncnn = tk.Button(r_mdl, text="ncnnフォルダ", font=FONT_NORMAL,
+                             bg=COLOR_BG_INPUT, fg=COLOR_ACCENT,
+                             relief="flat", padx=6, pady=2, cursor="hand2",
+                             command=_pick_ncnn)
+        btn_ncnn.pack(side=tk.LEFT, padx=(4, 0))
+        Tooltip(btn_ncnn, "ncnn形式のモデルフォルダ(*.ncnnディレクトリ)を選択します")
+        vm.trace_add("write", lambda *a: s.update({"model_path": vm.get()}))
+
+        _section_title(g3, "▼ 容量監視・自動削除")
+
+        st = self.temp_data["storage"]
+
+        r_ad = _row_frame(g3)
+        v_ad = tk.BooleanVar(value=bool(st.get("auto_delete_enabled", False)))
+        cb = tk.Checkbutton(
+            r_ad, text="古い結果画像を自動削除する",
+            variable=v_ad, onvalue=True, offvalue=False,
+            font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
+            activebackground=COLOR_BG_PANEL, activeforeground=COLOR_TEXT_MAIN,
+            selectcolor=COLOR_BG_INPUT, relief="flat"
+        )
+        cb.pack(side=tk.LEFT)
+        Tooltip(cb, "容量が上限を超えると、保存フォルダ内の古い画像から順番に自動削除します。\nCSVログやモデルファイルは削除されません。")
+        v_ad.trace_add("write", lambda *a: st.update({"auto_delete_enabled": v_ad.get()}))
+
+        r_mg = _row_frame(g3)
+        _lbl(r_mg, "最大容量上限:", "この容量を超えると古い画像から自動削除します。")
+        v_mg = tk.StringVar(value=str(st.get("max_results_gb", "")))
+        mg_sp = self._spinbox(r_mg, v_mg, 0.1, 9999.0, 1.0, width=8)
+        mg_sp.pack(side=tk.LEFT)
+        _unit(r_mg, "GB")
+        def _upd_mg(*a):
+            try:
+                st["max_results_gb"] = float(v_mg.get())
+            except Exception:
+                pass
+        v_mg.trace_add("write", _upd_mg)
+
+        v_used = tk.StringVar(value="現在の使用量: 計算中...")
+        lbl_used = tk.Label(g3, textvariable=v_used, font=FONT_SET_VAL,
+                            bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, anchor="w")
+        lbl_used.pack(fill=tk.X, pady=(4, 0))
+
+        def _calc_storage():
+            import shutil as _shutil
+            _res_dir = st.get("results_dir", "")
+            try:
+                if _res_dir and os.path.exists(_res_dir):
+                    _used = sum(f.stat().st_size for f in Path(_res_dir).rglob('*') if f.is_file())
+                    _used_gb = _used / (1024**3)
+                    _total_gb = _shutil.disk_usage(_res_dir).total / (1024**3)
+                    msg = f"現在の使用量: {_used_gb:.2f} GB / ディスク合計: {_total_gb:.1f} GB"
+                    self.after(0, lambda: v_used.set(msg))
+                else:
+                    self.after(0, lambda: v_used.set("現在の使用量: -"))
+            except Exception:
+                self.after(0, lambda: v_used.set("(使用量の取得に失敗しました)"))
+
+        threading.Thread(target=_calc_storage, daemon=True).start()
+
+        # =====================================================================
+        # 4. 音声・ブザー設定
+        # =====================================================================
+        g4 = _make_group(scroll_f, "音声・ブザー設定", pady=(10, 6))
+
+        r_bng = _row_frame(g4)
+        _lbl(r_bng, "NG時ブザー音:", "NG判定時に再生する音声ファイルです。空欄で無効。")
+        vb = tk.StringVar(value=s.get("buzzer_path", ""))
+        _entry_w(r_bng, vb, width=35)
+        _browse_btn(r_bng, vb, mode="file",
+                    filetypes=[("音声ファイル", "*.mp3 *.wav *.ogg"), ("すべて", "*.*")])
+        _play_btn(r_bng, vb)
+        vb.trace_add("write", lambda *a: s.update({"buzzer_path": vb.get()}))
+
+        r_bok = _row_frame(g4)
+        _lbl(r_bok, "OK時ブザー音:", "OK判定時に再生する音声ファイルです。空欄で無効。")
+        vob = tk.StringVar(value=s.get("ok_buzzer_path", ""))
+        _entry_w(r_bok, vob, width=35)
+        _browse_btn(r_bok, vob, mode="file",
+                    filetypes=[("音声ファイル", "*.mp3 *.wav *.ogg"), ("すべて", "*.*")])
+        _play_btn(r_bok, vob)
+        vob.trace_add("write", lambda *a: s.update({"ok_buzzer_path": vob.get()}))
+
+        # =====================================================================
+        # 5. システムツール & メンテナンス
+        # =====================================================================
+        g5 = _make_group(scroll_f, "システムツール & メンテナンス", pady=(10, 16))
+
+        # 起動ショートカット作成
+        r_sh = _row_frame(g5)
         _lbl(r_sh, "起動スクリプト生成:", "デスクトップにワンクリックで本アプリを起動するファイルを作成します。")
 
         def _get_desktop_path():
@@ -1972,6 +2139,173 @@ class SettingsDialog(tk.Toplevel):
         )
         btn_shortcut.pack(side=tk.LEFT, padx=(0, 6))
         Tooltip(btn_shortcut, f"デスクトップに本アプリを起動する{'batch (.bat)' if is_win else 'shell (.sh)'}ファイルを作成します")
+
+        # 日時設定
+        r_datetime = _row_frame(g5)
+        _lbl(r_datetime, "ラズパイ本体日時設定:", "本体のシステム日付・時刻を手動設定または端末同期します。")
+
+        def _open_datetime_dialog():
+            SystemDateTimeDialog(self)
+
+        btn_dt = tk.Button(
+            r_datetime, text="ラズパイ本体の日時を設定", font=FONT_NORMAL,
+            bg=COLOR_ACCENT, fg="white",
+            relief="flat", padx=10, pady=4, cursor="hand2",
+            command=_open_datetime_dialog
+        )
+        btn_dt.pack(side=tk.LEFT, padx=(0, 6))
+        Tooltip(btn_dt, "Linux/Raspberry Piのシステム日時(timedatectl/date)を設定するダイアログを開きます")
+
+        # USBスピーカー設定
+        r_audio = _row_frame(g5)
+        _lbl(r_audio, "USBスピーカー自動設定:", "音が出ない場合に、ALSA/PulseAudio/PipeWire等の出力先とミュートを自動解除します。")
+
+        def _fix_usb_audio():
+            if sys.platform.startswith("win"):
+                messagebox.showinfo(
+                    "USBスピーカー設定 (Windows)",
+                    "Windows環境のためLinuxオーディオ設定 (ALSA/PulseAudio/PipeWire/asoundrc) はスキップされました。\n"
+                    "※ラズパイ/Linux環境で自動出力設定が実行されます。",
+                    parent=self
+                )
+                return
+
+            import subprocess
+            logs = []
+
+            # 1. ALSA mixer (amixer) ミュート解除・ボリューム100%化
+            channels = ["Master", "PCM", "Speaker", "Headphone", "Line"]
+            for card_idx in range(5):
+                for ch in channels:
+                    cmd = ["amixer", "-c", str(card_idx), "sset", ch, "100%", "unmute"]
+                    try:
+                        r = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+                        if r.returncode == 0:
+                            logs.append(f"ALSA: card {card_idx} {ch} -> 100% unmute")
+                    except Exception:
+                        pass
+
+            for ch in channels:
+                try:
+                    subprocess.run(["amixer", "sset", ch, "100%", "unmute"], capture_output=True, text=True, timeout=3)
+                except Exception:
+                    pass
+
+            try:
+                subprocess.run(["sudo", "alsactl", "store"], capture_output=True, text=True, timeout=3)
+                logs.append("ALSA: alsactl store 実行完了")
+            except Exception:
+                pass
+
+            # 2. PulseAudio / PipeWire (pactl / wpctl)
+            try:
+                subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"], capture_output=True, text=True, timeout=3)
+                subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "100%"], capture_output=True, text=True, timeout=3)
+                logs.append("PulseAudio: @DEFAULT_SINK@ -> unmute & 100%")
+            except Exception:
+                pass
+
+            try:
+                r = subprocess.run(["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=3)
+                if r.returncode == 0 and r.stdout:
+                    for line in r.stdout.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            sink_name = parts[1]
+                            if any(k in sink_name.lower() for k in ["usb", "audio", "headset", "speaker"]):
+                                subprocess.run(["pactl", "set-default-sink", sink_name], capture_output=True, text=True, timeout=3)
+                                subprocess.run(["pactl", "set-sink-mute", sink_name, "0"], capture_output=True, text=True, timeout=3)
+                                subprocess.run(["pactl", "set-sink-volume", sink_name, "100%"], capture_output=True, text=True, timeout=3)
+                                logs.append(f"PulseAudio: USB Sink [{sink_name}] をデフォルトに設定")
+                                break
+            except Exception:
+                pass
+
+            try:
+                r = subprocess.run(["wpctl", "status"], capture_output=True, text=True, timeout=3)
+                if r.returncode == 0 and r.stdout:
+                    in_sinks = False
+                    for line in r.stdout.splitlines():
+                        if "Sinks:" in line:
+                            in_sinks = True
+                            continue
+                        if in_sinks and ("Sources:" in line or "Filters:" in line or not line.strip()):
+                            in_sinks = False
+                        if in_sinks and any(k in line.lower() for k in ["usb", "audio", "speaker"]):
+                            cleaned = line.replace("│", "").replace("*", "").strip()
+                            parts = cleaned.split(".")
+                            if parts[0].strip().isdigit():
+                                sink_id = parts[0].strip()
+                                subprocess.run(["wpctl", "set-default", sink_id], capture_output=True, text=True, timeout=3)
+                                subprocess.run(["wpctl", "set-mute", sink_id, "0"], capture_output=True, text=True, timeout=3)
+                                subprocess.run(["wpctl", "set-volume", sink_id, "1.0"], capture_output=True, text=True, timeout=3)
+                                logs.append(f"PipeWire: USB Sink ID [{sink_id}] をデフォルトに設定")
+                                break
+            except Exception:
+                pass
+
+            # 3. ~/.asoundrc に USB オーディオカード優先設定
+            try:
+                usb_card_num = None
+                if os.path.exists("/proc/asound/cards"):
+                    with open("/proc/asound/cards", "r", encoding="utf-8", errors="ignore") as f:
+                        cards_info = f.read()
+                        for line in cards_info.splitlines():
+                            if "USB" in line or "Audio" in line:
+                                parts = line.strip().split()
+                                if parts and parts[0].isdigit():
+                                    usb_card_num = parts[0]
+                                    break
+
+                if usb_card_num is not None:
+                    asoundrc_path = os.path.expanduser("~/.asoundrc")
+                    asoundrc_content = f"""pcm.!default {{
+    type plug
+    slave.pcm "hw:{usb_card_num},0"
+}}
+ctl.!default {{
+    type hw
+    card {usb_card_num}
+}}
+"""
+                    with open(asoundrc_path, "w", encoding="utf-8") as f:
+                        f.write(asoundrc_content)
+                    logs.append(f"ALSA config: ~/.asoundrc を生成 (USB Card: {usb_card_num})")
+            except Exception as ex:
+                logs.append(f"ALSA config エラー: {ex}")
+
+            # 4. raspi-config
+            try:
+                subprocess.run(["sudo", "raspi-config", "nonint", "do_audio", "2"], capture_output=True, text=True, timeout=3)
+                logs.append("raspi-config: do_audio (USB Audio/Headphones) 実行")
+            except Exception:
+                pass
+
+            # 5. Pygame mixer
+            try:
+                import pygame
+                if pygame.mixer.get_init():
+                    pygame.mixer.quit()
+                pygame.mixer.init()
+                logs.append("Pygame Mixer: 再初期化完了")
+            except Exception as ex:
+                logs.append(f"Pygame Mixer 再初期化スキップ: {ex}")
+
+            if logs:
+                msg = "USBスピーカー音声出力の設定・自動復旧を完了しました。\n\n【実行ログ】\n" + "\n".join(logs)
+                messagebox.showinfo("USBスピーカー設定完了", msg, parent=self)
+            else:
+                messagebox.showwarning("USBスピーカー設定", "設定コマンドを実行しましたが、変更ログはありませんでした。", parent=self)
+
+        btn_audio = tk.Button(
+            r_audio, text="USBスピーカー音声出力を自動復旧・設定", font=FONT_NORMAL,
+            bg=COLOR_ACCENT, fg="white",
+            relief="flat", padx=10, pady=4, cursor="hand2",
+            command=_fix_usb_audio
+        )
+        btn_audio.pack(side=tk.LEFT, padx=(0, 6))
+        Tooltip(btn_audio, "音が出ない場合に、ALSA/PulseAudio/PipeWire/asoundrc等の設定を一括自動実行します")
+
 
     # ---- 保存 / GPIO テスト ----
 
