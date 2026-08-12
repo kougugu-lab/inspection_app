@@ -1117,7 +1117,14 @@ class InspectionSystem:
         # ファイル名に使えない文字を除去
         filename = "".join([c for c in filename if c not in '<>:"/\\|?*'])
         res_dir = self.get_results_dir()
-        save_dir = res_dir / "images" / result_type
+
+        # 撮影モード(REC)はパターン・カメラ・トリガーごとのサブフォルダに分類保存
+        if result_type == "REC":
+            subfolder_name = f"{pattern_name}_{camera_name}_{trig_name}"
+            subfolder_name = "".join([c for c in subfolder_name if c not in '<>:"/\\|?*'])
+            save_dir = res_dir / "images" / result_type / subfolder_name
+        else:
+            save_dir = res_dir / "images" / result_type
         save_dir.mkdir(parents=True, exist_ok=True)
         
         save_path = save_dir / filename
