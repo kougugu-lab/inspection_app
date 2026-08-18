@@ -77,6 +77,7 @@ class InspectionSystem:
 
         # サイクル管理用の状態変数
         self.cycle_active_pat_id = None  # 現在のサイクルで固定されたパターンID
+        self.door_latch_pat_id = None    # ドアライン対応用：Fr時決定パターンの1台(Fr+Rr)保持用
         self.cycle_fired_trigs = set()   # 現在のサイクルで実行済みのトリガーID
         self.cycle_trig_idx = 0          # 現在待ち受けているトリガーのインデックス
 
@@ -501,18 +502,18 @@ class InspectionSystem:
         tk.Label(pnl, text="コミット番号", font=FONT_BOLD,
                  bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(pady=(5, 2))
         cf = tk.Frame(pnl, bg=COLOR_BG_PANEL)
-        cf.pack(pady=5)
+        cf.pack(fill=tk.X, padx=10, pady=5)
         tk.Button(cf, text="－", font=FONT_LARGE, bg=COLOR_BG_INPUT,
                   fg=COLOR_TEXT_MAIN, width=3, relief="flat",
-                  command=lambda: self.adjust_commit(-1)).pack(side=tk.LEFT)
+                  command=lambda: self.adjust_commit(-1)).pack(side=tk.LEFT, fill=tk.Y)
+        tk.Button(cf, text="＋", font=FONT_LARGE, bg=COLOR_BG_INPUT,
+                  fg=COLOR_TEXT_MAIN, width=3, relief="flat",
+                  command=lambda: self.adjust_commit(1)).pack(side=tk.RIGHT, fill=tk.Y)
         self.v_commit = tk.StringVar(value="0001")
         self.lbl_commit = tk.Label(cf, textvariable=self.v_commit,
                                    bg=COLOR_BG_INPUT, fg=COLOR_ACCENT)
         self.update_commit_display()
-        self.lbl_commit.pack(side=tk.LEFT, padx=10)
-        tk.Button(cf, text="＋", font=FONT_LARGE, bg=COLOR_BG_INPUT,
-                  fg=COLOR_TEXT_MAIN, width=3, relief="flat",
-                  command=lambda: self.adjust_commit(1)).pack(side=tk.LEFT)
+        self.lbl_commit.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6)
         tk.Button(pnl, text="番号入力", font=FONT_NORMAL, bg="#546E7A",
                   fg="white", relief="flat",
                   command=self.manual_commit_set).pack(fill=tk.X, padx=10, pady=5)
@@ -765,11 +766,16 @@ class InspectionSystem:
         t = threading.Thread(target=_thread_task, daemon=True)
         t.start()
 
-    def get_commit_str(self):
+    def get_commit_str(self, for_ui=False):
         st_sys = self.settings.data.get("system", {})
         is_half_step = bool(st_sys.get("commit_half_step", False))
         if is_half_step:
-            return f"{self.commit_number:06.1f}"
+            is_fr = (self.commit_number % 1.0 < 0.25)
+            tag = "Fr" if is_fr else "Rr"
+            c_int = int(self.commit_number)
+            if for_ui:
+                return f"{c_int:04d} {tag}"
+            return f"{c_int:04d}{tag}"
         else:
             return f"{int(self.commit_number):04d}"
 
@@ -784,21 +790,21 @@ class InspectionSystem:
         elif self.commit_number < 1.0:
             self.commit_number = 9999.0
         # UI更新はメインスレッド経由で実行（Tkinterスレッドセーフ対応）
-        self.root.after(0, lambda: self.v_commit.set(self.get_commit_str()))
+        self.root.after(0, lambda: self.v_commit.set(self.get_commit_str(for_ui=True)))
 
     def update_commit_display(self):
         commit_font, commit_width = get_commit_display_style(
             bool(self.settings.data.get("system", {}).get("commit_half_step", False))
         )
         self.lbl_commit.config(font=commit_font, width=commit_width)
-        self.v_commit.set(self.get_commit_str())
+        self.v_commit.set(self.get_commit_str(for_ui=True))
 
     def manual_commit_set(self):
         is_half_step = bool(self.settings.data.get("system", {}).get("commit_half_step", False))
         d = TenKeyDialog(self.root, "コミット番号設定", self.commit_number, is_half_step)
         if d.result is not None:
             self.commit_number = float(d.result)
-            self.v_commit.set(self.get_commit_str())
+            self.v_commit.set(self.get_commit_str(for_ui=True))
 
     def manual_commit_set_initial(self):
         try:
@@ -806,7 +812,7 @@ class InspectionSystem:
             d = TenKeyDialog(self.root, "開始コミット番号", self.commit_number, is_half_step)
             if d.result is not None:
                 self.commit_number = float(d.result)
-                self.v_commit.set(self.get_commit_str())
+                self.v_commit.set(self.get_commit_str(for_ui=True))
         except Exception as e:
             self.logger.error(f"初期コミット番号設定エラー: {e}")
 
@@ -1271,7 +1277,21 @@ class InspectionSystem:
         conditions_cache = {}  # {cid: [条件リスト]}
         if not is_skip and pat_id:
             stage = self.settings.data["patterns"][pat_id]["stages"].get(trig_id, {})
-            cond_data = stage.get("conditions", [])
+            
+            # ドアライン対応時、Fr/Rrに応じた個別条件を優先取得
+            st_sys = self.settings.data.get("system", {})
+            is_half_step = bool(st_sys.get("commit_half_step", False))
+            is_fr = (self.commit_number % 1.0 < 0.25)
+            
+            if is_half_step:
+                cond_key = "conditions_fr" if is_fr else "conditions_rr"
+                cond_data = stage.get(cond_key)
+                if cond_data is None:
+                    # 未設定時は従来の conditions をフォールバック
+                    cond_data = stage.get("conditions", [])
+            else:
+                cond_data = stage.get("conditions", [])
+
             for cam in self.settings.data["cameras"]:
                 cid = cam["id"]
                 if isinstance(cond_data, list):
@@ -1435,47 +1455,61 @@ class InspectionSystem:
         # 1つ目のトリガーが入った時点でその時のセレクター状態でパターンを固定する
         # cycle_active_pat_id が None でも、遅延SKIP中は専用IDが入るため fired_trigs で判定する
         if self.cycle_active_pat_id is None and len(self.cycle_fired_trigs) == 0:
-            raw_pat_id = self.get_current_pattern()
-
-            # --- 遅延キュー制御 ---
-            # delay_cycles が設定されている場合、パターン情報はキューに積んで
-            # 指定サイクル後に取り出す（仕様情報の保存機能）
             st_sys = self.settings.data.get("system", {})
+            is_half_step = bool(st_sys.get("commit_half_step", False))
+            is_fr = (self.commit_number % 1.0 < 0.25)
             delay_cycles = float(st_sys.get("delay_cycles", 0))
 
-            if delay_cycles > 0:
-                # キューにパターン情報を積む
-                self.delay_pattern_queue.append(raw_pat_id)
+            if is_half_step and not is_fr and getattr(self, 'door_latch_pat_id', None) is not None:
+                # ドアライン Rr 時: Fr 時のパターンをそのまま引き継ぐ（新しくピン読みやキュー消費はしない）
+                self.cycle_active_pat_id = self.door_latch_pat_id
+                self.cycle_is_delayed_skip = (self.cycle_active_pat_id == DELAYED_SKIP_PATTERN_ID)
+                self.logger.info(
+                    f"[ドアライン] Rrサイクル: Frパターンを引き継ぎ適用 (ID: {self.cycle_active_pat_id})"
+                )
+            else:
+                raw_pat_id = self.get_current_pattern()
 
-                if self.elapsed_cycles < delay_cycles:
-                    # 遅延期間中: キューから消費せず、今サイクルは SKIP 扱い
-                    self.cycle_active_pat_id = DELAYED_SKIP_PATTERN_ID
-                    self.cycle_is_delayed_skip = True
-                    self.logger.info(
-                        f"[遅延キュー] 蓄積中 ({self.elapsed_cycles:.1f}/{delay_cycles:.1f} サイクル完了)。"
-                        f" キュー長={len(self.delay_pattern_queue)}"
-                    )
+                # --- 遅延キュー制御 ---
+                # delay_cycles が設定されている場合、パターン情報はキューに積んで
+                # 指定サイクル後に取り出す（仕様情報の保存機能）
+                if delay_cycles > 0:
+                    # キューにパターン情報を積む
+                    self.delay_pattern_queue.append(raw_pat_id)
+
+                    if self.elapsed_cycles < delay_cycles:
+                        # 遅延期間中: キューから消費せず、今サイクルは SKIP 扱い
+                        self.cycle_active_pat_id = DELAYED_SKIP_PATTERN_ID
+                        self.cycle_is_delayed_skip = True
+                        self.logger.info(
+                            f"[遅延キュー] 蓄積中 ({self.elapsed_cycles:.1f}/{delay_cycles:.1f} サイクル完了)。"
+                            f" キュー長={len(self.delay_pattern_queue)}"
+                        )
+                    else:
+                        # 遅延完了: キューの先頭を取り出して今サイクルに適用
+                        applied_pat_id = self.delay_pattern_queue.pop(0) if self.delay_pattern_queue else None
+                        self.cycle_active_pat_id = applied_pat_id
+                        self.cycle_is_delayed_skip = False
+
+                        # ログ用に設定されたパターン名を取得
+                        applied_pat_name = "SKIP"
+                        if applied_pat_id and applied_pat_id in d.get("patterns", {}):
+                            applied_pat_name = d["patterns"][applied_pat_id].get("name", "").strip() or str(applied_pat_id)
+                        elif applied_pat_id:
+                            applied_pat_name = str(applied_pat_id)
+
+                        self.logger.info(
+                            f"[遅延キュー] パターン適用: {applied_pat_name} (ID: {applied_pat_id})。"
+                            f" キュー残={len(self.delay_pattern_queue)}"
+                        )
                 else:
-                    # 遅延完了: キューの先頭を取り出して今サイクルに適用
-                    applied_pat_id = self.delay_pattern_queue.pop(0) if self.delay_pattern_queue else None
-                    self.cycle_active_pat_id = applied_pat_id
+                    # 遅延なし: そのまま適用
+                    self.cycle_active_pat_id = raw_pat_id
                     self.cycle_is_delayed_skip = False
 
-                    # ログ用に設定されたパターン名を取得
-                    applied_pat_name = "SKIP"
-                    if applied_pat_id and applied_pat_id in d.get("patterns", {}):
-                        applied_pat_name = d["patterns"][applied_pat_id].get("name", "").strip() or str(applied_pat_id)
-                    elif applied_pat_id:
-                        applied_pat_name = str(applied_pat_id)
-
-                    self.logger.info(
-                        f"[遅延キュー] パターン適用: {applied_pat_name} (ID: {applied_pat_id})。"
-                        f" キュー残={len(self.delay_pattern_queue)}"
-                    )
-            else:
-                # 遅延なし: そのまま適用
-                self.cycle_active_pat_id = raw_pat_id
-                self.cycle_is_delayed_skip = False
+                # ドアライン対応時、Fr時（または通常時）の決定パターンをラッチ保持
+                if is_half_step:
+                    self.door_latch_pat_id = self.cycle_active_pat_id
 
             self.cycle_fired_trigs = set()
             self.cycle_trig_idx = 0 # 念のため
@@ -1742,7 +1776,7 @@ class InspectionSystem:
 
                 # デバウンス（最小トリガー間隔）保護チェック
                 d = self.settings.data
-                debounce_sec = float(d.get("inference", {}).get("trigger_debounce_sec", 3.0))
+                debounce_sec = float(d.get("inference", {}).get("trigger_debounce_sec", 0.0))
                 now_t = time.time()
                 time_diff = now_t - self.last_trigger_time
 

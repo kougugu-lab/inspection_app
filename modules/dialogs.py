@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import time
+import copy
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import threading
@@ -252,6 +253,18 @@ class SystemDateTimeDialog(tk.Toplevel):
         sp_s = ttk.Spinbox(f_time, from_=0, to=59, increment=1, textvariable=self.v_sec, width=4, font=font_num)
         sp_s.pack(side=tk.LEFT, padx=4)
         tk.Label(f_time, text="秒", font=font_lbl, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN).pack(side=tk.LEFT)
+
+        # 全Spinboxの安全停止ハンドラ
+        for sp in [sp_y, sp_m, sp_d, sp_h, sp_mi, sp_s]:
+            def _stop_ttk_sp(event=None, widget=sp):
+                try:
+                    rep = widget.tk.call('set', '::ttk::spinbox::Repeater')
+                    if rep: widget.tk.call('after', 'cancel', rep)
+                except Exception:
+                    pass
+            sp.bind("<ButtonRelease-1>", _stop_ttk_sp, add="+")
+            sp.bind("<Leave>", _stop_ttk_sp, add="+")
+            sp.bind("<FocusOut>", _stop_ttk_sp, add="+")
 
         def _set_current():
             n = datetime.now()
@@ -609,7 +622,21 @@ class SettingsDialog(tk.Toplevel):
     def _spinbox(self, parent, var, from_, to, increment=1, width=6, key_path=None):
         sb = tk.Spinbox(parent, from_=from_, to=to, increment=increment, textvariable=var,
                         font=FONT_SET_VAL, width=width, bg=COLOR_BG_INPUT, fg="white", 
-                        buttonbackground="#78909C", bd=1, relief="solid")
+                        buttonbackground="#78909C", bd=1, relief="solid",
+                        repeatdelay=0, repeatinterval=0)
+        
+        # ラズパイ環境での長押しタイマー暴走を防止する安全ハンドラ
+        def _stop_repeat(event=None):
+            try:
+                rep_id = sb.tk.call('set', '::tk::spinbox::Repeater')
+                if rep_id:
+                    sb.tk.call('after', 'cancel', rep_id)
+            except Exception:
+                pass
+        sb.bind("<ButtonRelease-1>", _stop_repeat, add="+")
+        sb.bind("<Leave>", _stop_repeat, add="+")
+        sb.bind("<FocusOut>", _stop_repeat, add="+")
+
         if key_path:
             def _trace(*args):
                 self._mark_changed()
@@ -1415,11 +1442,20 @@ class SettingsDialog(tk.Toplevel):
         # ツールチップ用共通テキスト
         tip_text = "【判定仕様】\n・同じトリガー内の条件はすべて満たす必要があります (AND条件)。\n・検出クラスを空欄にすると、指定カメラの全検出物の合計数で判定します。"
 
-        for t in self.temp_data["gpio"]["triggers"]:
+        is_half_step = bool(self.temp_data.get("system", {}).get("commit_half_step", False))
+
+        def _create_trigger_card(t):
             tid = t["id"]
             if tid not in p["stages"]:
                 p["stages"][tid] = {"conditions": {}}
             st = p["stages"][tid]
+
+            # ドアライン対応時、conditions_fr / conditions_rr が未作成なら初期化
+            if is_half_step:
+                if "conditions_fr" not in st:
+                    st["conditions_fr"] = copy.deepcopy(st.get("conditions", {}))
+                if "conditions_rr" not in st:
+                    st["conditions_rr"] = copy.deepcopy(st.get("conditions", {}))
             
             # 個別カード (灰色枠線)
             cf_outer = tk.Frame(self.pat_body, bg="#808080", padx=1, pady=1)
@@ -1432,24 +1468,25 @@ class SettingsDialog(tk.Toplevel):
             tk.Label(head_f, text=f"■ {t['name']}", font=FONT_BOLD,
                      bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN).pack(side=tk.LEFT)
             
-            # 条件テーブルコンテナ
             cond_container = tk.Frame(cf_inner, bg=COLOR_BG_PANEL)
-            cond_container.pack(fill=tk.X, pady=10)
 
-            def _refresh_conditions(container=cond_container, stage=st, trigger_id=tid):
-                for w in container.winfo_children(): w.destroy()
-                
-                # stage["conditions"] は毎回取り直す (クロージャ問題左回避)
-                if not isinstance(stage.get("conditions"), dict):
-                    stage["conditions"] = {}
-                if isinstance(stage["conditions"], list):
-                    # 旧形式からの救済
+            def _build_table(target_frame, part="fr"):
+                # target_frame 内の子要素のみクリア
+                for w in target_frame.winfo_children():
+                    w.destroy()
+
+                cond_key = "conditions"
+                if is_half_step:
+                    cond_key = "conditions_fr" if part == "fr" else "conditions_rr"
+
+                if not isinstance(st.get(cond_key), dict):
+                    st[cond_key] = {}
+                if isinstance(st[cond_key], list):
                     c_id = str(self.temp_data["cameras"][0]["id"]) if self.temp_data["cameras"] else "1"
-                    stage["conditions"] = {c_id: stage["conditions"]}
-                # 以後は常に stage["conditions"] を直接参照する
-                
+                    st[cond_key] = {c_id: st[cond_key]}
+
                 # テーブルヘッダー
-                header_f = tk.Frame(container, bg=COLOR_BG_PANEL)
+                header_f = tk.Frame(target_frame, bg=COLOR_BG_PANEL)
                 header_f.pack(fill=tk.X, pady=(0, 5))
                 
                 l_cam = tk.Label(header_f, text="対象カメラ", font=FONT_BOLD, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, width=20, anchor="w")
@@ -1469,11 +1506,11 @@ class SettingsDialog(tk.Toplevel):
                 # 各カメラの条件をフラットに並べてテーブル化
                 for c in self.temp_data["cameras"]:
                     c_id = str(c["id"])
-                    c_conds = stage["conditions"].setdefault(c_id, [])
+                    c_conds = st[cond_key].setdefault(c_id, [])
 
                     for ci, cond in enumerate(c_conds):
-                        def _create_row_ui(cam_obj=c, cid=c_id, idx=ci, cond_obj=cond):
-                            row_f = tk.Frame(container, bg=COLOR_BG_PANEL)
+                        def _create_row_ui(cam_obj=c, cid=c_id, idx=ci, cond_obj=cond, _tf=target_frame, _cur_p=part):
+                            row_f = tk.Frame(_tf, bg=COLOR_BG_PANEL)
                             row_f.pack(fill=tk.X, pady=2)
                             
                             tk.Label(row_f, text=cam_obj["name"], font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN, width=20, anchor="w").pack(side=tk.LEFT, padx=5)
@@ -1483,10 +1520,10 @@ class SettingsDialog(tk.Toplevel):
                             cb.pack(side=tk.LEFT, padx=5)
                             
                             nv = tk.StringVar(value=cond_obj.get("count", "1"))
-                            kp = f"patterns.{pid}.stages.{tid}.conditions.{cid}.{idx}"
+                            kp = f"patterns.{pid}.stages.{tid}.{cond_key}.{cid}.{idx}"
                             self._spinbox(row_f, nv, 0, 999, 1, width=8, key_path=f"{kp}.count").pack(side=tk.LEFT, padx=5)
                             
-                            def _upd_cond(c_dict=cond_obj, v1=cv, v2=nv, w_cb=cb, k_p=kp):
+                            def _upd_cond(c_dict=cond_obj, v1=cv, v2=nv):
                                 try:
                                     c_dict["class"] = v1.get()
                                     c_dict["count"] = v2.get()
@@ -1497,20 +1534,20 @@ class SettingsDialog(tk.Toplevel):
                             cv.trace_add("write", lambda *a, u=_upd_cond: u())
                             nv.trace_add("write", lambda *a, u=_upd_cond: u())
                             
-                            def _do_del(cid_target=cid, target_cond=cond_obj, _stage=stage):
-                                if cid_target in _stage["conditions"] and target_cond in _stage["conditions"][cid_target]:
-                                    _stage["conditions"][cid_target].remove(target_cond)
-                                    # パターン全体を再描画することで確実に反映させる
-                                    self.on_pat_sel(None)
+                            def _do_del(cid_target=cid, target_cond=cond_obj, _ck=cond_key, _t_frame=_tf, _p=_cur_p):
+                                if cid_target in st[_ck] and target_cond in st[_ck][cid_target]:
+                                    st[_ck][cid_target].remove(target_cond)
+                                    _build_table(_t_frame, _p)
+                                    _update_canvas_scroll()
                                     self._mark_changed()
 
                             tk.Button(row_f, text="x", font=(FONT_FAMILY, 10, "bold"), bg=COLOR_NG_MUTED, fg="white", relief="flat", width=2,
-                                      command=_do_del).pack(side=tk.RIGHT, padx=5)
+                                      command=_do_del, takefocus=False).pack(side=tk.RIGHT, padx=5)
                         
                         _create_row_ui()
 
                 # 行の追加用ボタンエリア
-                add_row_f = tk.Frame(container, bg=COLOR_BG_PANEL)
+                add_row_f = tk.Frame(target_frame, bg=COLOR_BG_PANEL)
                 add_row_f.pack(fill=tk.X, pady=10)
                 
                 cam_names = [c["name"] for c in self.temp_data["cameras"]]
@@ -1519,22 +1556,70 @@ class SettingsDialog(tk.Toplevel):
                 cb_add = ttk.Combobox(add_row_f, textvariable=sel_cam_v, values=cam_names, state="readonly", width=18, font=FONT_SET_VAL)
                 cb_add.pack(side=tk.LEFT, padx=5)
 
-                def _add_cond_row(_stage=stage):
+                def _add_cond_row(_ck=cond_key, _t_frame=target_frame, _cur_p=part):
                     c_name = sel_cam_v.get()
                     target_c = next((c for c in self.temp_data["cameras"] if c["name"] == c_name), None)
                     if target_c:
                         c_id = str(target_c["id"])
-                        _stage["conditions"].setdefault(c_id, []).append({"class": "", "count": "1"})
-                        # パターン全体を再描画することで確実に反映させる
-                        self.on_pat_sel(None)
+                        st[_ck].setdefault(c_id, []).append({"class": "", "count": "1"})
+                        _build_table(_t_frame, _cur_p)
+                        _update_canvas_scroll()
                         self._mark_changed()
 
                 btn_add = tk.Button(add_row_f, text="+ 条件追加", font=FONT_NORMAL, bg=COLOR_ACCENT, fg="black", relief="flat",
-                                    command=_add_cond_row)
+                                    command=_add_cond_row, takefocus=False)
                 btn_add.pack(side=tk.LEFT, padx=5)
                 Tooltip(btn_add, tip_text)
 
-            _refresh_conditions()
+            def _update_canvas_scroll():
+                if hasattr(self, "pat_canvas") and self.pat_canvas.winfo_exists():
+                    self.pat_canvas.configure(scrollregion=self.pat_canvas.bbox("all"))
+
+            cond_container.pack(fill=tk.X, pady=10)
+
+            if is_half_step:
+                frame_fr = tk.Frame(cond_container, bg=COLOR_BG_PANEL)
+                frame_rr = tk.Frame(cond_container, bg=COLOR_BG_PANEL)
+
+                _build_table(frame_fr, "fr")
+                _build_table(frame_rr, "rr")
+
+                # 初期表示は Fr
+                frame_fr.pack(fill=tk.X)
+
+                part_frm = tk.Frame(head_f, bg=COLOR_BG_PANEL)
+                part_frm.pack(side=tk.RIGHT)
+
+                btn_fr = tk.Button(part_frm, text="Fr 判定条件", font=FONT_BOLD, width=11, relief="flat", takefocus=False)
+                btn_rr = tk.Button(part_frm, text="Rr 判定条件", font=FONT_BOLD, width=11, relief="flat", takefocus=False)
+
+                def _show_fr():
+                    frame_rr.pack_forget()
+                    frame_fr.pack(fill=tk.X)
+                    btn_fr.config(bg=COLOR_ACCENT, fg="black")
+                    btn_rr.config(bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN)
+                    _update_canvas_scroll()
+
+                def _show_rr():
+                    frame_fr.pack_forget()
+                    frame_rr.pack(fill=tk.X)
+                    btn_rr.config(bg=COLOR_ACCENT, fg="black")
+                    btn_fr.config(bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN)
+                    _update_canvas_scroll()
+
+                btn_fr.config(command=_show_fr)
+                btn_rr.config(command=_show_rr)
+                btn_fr.pack(side=tk.LEFT, padx=(0, 4))
+                btn_rr.pack(side=tk.LEFT)
+                btn_fr.config(bg=COLOR_ACCENT, fg="black")
+                btn_rr.config(bg=COLOR_BG_INPUT, fg=COLOR_TEXT_MAIN)
+            else:
+                frame_single = tk.Frame(cond_container, bg=COLOR_BG_PANEL)
+                _build_table(frame_single, "single")
+                frame_single.pack(fill=tk.X)
+
+        for t in self.temp_data["gpio"]["triggers"]:
+            _create_trigger_card(t)
 
         # スクロール領域の更新
         self.after(50, lambda: self.pat_canvas.configure(scrollregion=self.pat_canvas.bbox("all")) if hasattr(self, "pat_canvas") and self.pat_canvas.winfo_exists() else None)
@@ -1785,7 +1870,7 @@ class SettingsDialog(tk.Toplevel):
         # 数値パラメータ
         num_params = [
             ("トリガー不感時間:", "trigger_debounce_sec", "sec",
-             "連続して信号が入った場合に二重検出を防止する最小インターバル秒数です。3.0秒推奨。", 0.0, 10.0, 0.1),
+             "連続して信号が入った場合に二重検出を防止する最小インターバル秒数です。デフォルト0.0秒（0.0で無効）。", 0.0, 10.0, 0.1),
             ("最大リトライ回数:", "max_retries", "回",
              "1回のトリガーで最大何回まで撮り直しますか。", 0, 99, 1),
             ("撮影間隔:", "burst_interval", "sec",
@@ -1879,14 +1964,14 @@ class SettingsDialog(tk.Toplevel):
         r_step = _row_frame(g2)
         v_step = tk.BooleanVar(value=bool(st_sys.get("commit_half_step", False)))
         cb_step = tk.Checkbutton(
-            r_step, text="コミット番号を0.5刻みで進める (ドアライン対応)",
+            r_step, text="ドアライン対応 (Fr/Rr 分割判定 & 0.5刻みコミット)",
             variable=v_step, onvalue=True, offvalue=False,
             font=FONT_SET_VAL, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN,
             activebackground=COLOR_BG_PANEL, activeforeground=COLOR_TEXT_MAIN,
             selectcolor=COLOR_BG_INPUT, relief="flat"
         )
         cb_step.pack(side=tk.LEFT)
-        Tooltip(cb_step, "ONにすると、コミット番号が1.0, 1.5, 2.0... のように0.5刻みでカウントアップされます。1つのコミット内で同じトリガーが2回入るラインに対応します。")
+        Tooltip(cb_step, "ONにすると、コミット番号が 0001 Fr → 0001 Rr → 0002 Fr... のように進行します。\n整数時(Fr)にのみパターンを取得して1台分引き継ぎ、Fr/Rr別々の判定条件を設定・評価できます。")
         
         def _format_delay_value(val, half_step):
             try:
