@@ -526,6 +526,15 @@ class SettingsDialog(tk.Toplevel):
         self.setup_res()
         self.setup_sys()
 
+        def _on_tab_changed(event):
+            selected_tab = nb.select()
+            # パターンタブが選択されたらドロップダウンを最新のクラス一覧で再描画
+            if selected_tab == str(self.t_pat):
+                if hasattr(self, "lb_pat") and self.lb_pat.winfo_exists():
+                    self.on_pat_sel(None)
+
+        nb.bind("<<NotebookTabChanged>>", _on_tab_changed)
+
         btn_help = tk.Button(btn_f, text="ヘルプ", font=FONT_SET_LBL,
                              bg=COLOR_BG_INPUT, fg=COLOR_ACCENT,
                              relief="flat", command=self.show_settings_help)
@@ -540,10 +549,21 @@ class SettingsDialog(tk.Toplevel):
         configure_modal_toplevel(self, parent)
 
     def on_cancel(self):
-        """キャンセル時やウィンドウを閉じた際もプレビュー再開を保証する"""
+        """キャンセル時やウィンドウを閉じた際もプレビュー再開とテスト出力停止を保証する"""
         release_modal_toplevel(self)
         if hasattr(self, "_live_preview_win") and self._live_preview_win.winfo_exists():
             self._live_preview_win.destroy()
+        if hasattr(self.master, "app_instance"):
+            app = self.master.app_instance
+            if hasattr(app, "reset_test_outputs"):
+                app.reset_test_outputs()
+        if hasattr(self, "_test_devices"):
+            for dev in self._test_devices.values():
+                try:
+                    dev.off()
+                except Exception:
+                    pass
+            self._test_devices.clear()
         if self.on_close_callback:
             self.on_close_callback()
         
@@ -593,21 +613,62 @@ class SettingsDialog(tk.Toplevel):
         }
         HelpWindow(self, "詳細設定 操作ガイド", help_data)
 
-    def _get_model_classes(self):
+    def _load_model_classes_for_path(self, path=None, show_feedback=True):
+        """指定パスのモデルをロードしてクラス一覧を更新し、UIに反映する"""
         classes = [""]
-        if not YOLO_AVAILABLE:
+        if path is None:
+            path = self.temp_data.get("inference", {}).get("model_path", "")
+
+        path = str(path).strip()
+        if not path or not os.path.exists(path):
+            self.model_classes = classes
+            if show_feedback and hasattr(self, "lbl_model_status") and self.lbl_model_status.winfo_exists():
+                self.lbl_model_status.config(text="モデル未指定またはファイル/フォルダが存在しません", fg=COLOR_TEXT_SUB)
             return classes
+
+        if not YOLO_AVAILABLE:
+            if show_feedback and hasattr(self, "lbl_model_status") and self.lbl_model_status.winfo_exists():
+                self.lbl_model_status.config(text="YOLO (ultralytics) が利用できないためクラス情報を取得できません", fg=COLOR_WARNING)
+            return classes
+
         try:
-            path = self.temp_data["inference"].get("model_path")
-            if path and os.path.exists(path):
-                # .ptモデルをロードしてクラス名を取得 (設定画面を開くたびに最新のモデル状態を確認するため)
-                model = YOLO(path)
-                names = getattr(model, 'names', {})
-                if names:
-                    classes += sorted(list(names.values()))
-        except Exception:
-            pass
-        return classes
+            is_ncnn = os.path.isdir(path) or path.endswith("_ncnn_model")
+            model = YOLO(path, task="detect") if is_ncnn else YOLO(path)
+            names = getattr(model, 'names', {})
+            if names:
+                classes += sorted(list(names.values()))
+            self.model_classes = classes
+
+            # --- ウォームアップ推論の実行 ---
+            try:
+                import numpy as np
+                dummy_img = np.zeros((640, 640, 3), dtype=np.uint8)
+                _ = model.predict(dummy_img, verbose=False)
+            except Exception:
+                pass
+            
+            cls_count = len(classes) - 1
+            sample_str = ", ".join(classes[1:6])
+            if len(classes) > 6:
+                sample_str += "..."
+            status_text = f"モデルロード＆ウォームアップ完了 (検出クラス: {cls_count}種類 [{sample_str}])"
+            
+            if show_feedback and hasattr(self, "lbl_model_status") and self.lbl_model_status.winfo_exists():
+                self.lbl_model_status.config(text=status_text, fg=COLOR_OK)
+
+            # パターン画面のドロップダウンを即時反映
+            if hasattr(self, "lb_pat") and self.lb_pat.winfo_exists():
+                self.on_pat_sel(None)
+
+            return classes
+        except Exception as e:
+            self.model_classes = classes
+            if show_feedback and hasattr(self, "lbl_model_status") and self.lbl_model_status.winfo_exists():
+                self.lbl_model_status.config(text=f"モデルロード失敗: {e}", fg=COLOR_NG)
+            return classes
+
+    def _get_model_classes(self):
+        return self._load_model_classes_for_path(show_feedback=False)
 
     def _entry(self, parent, var, width=None, key_path=None):
         ent = tk.Entry(parent, textvariable=var, font=FONT_SET_VAL,
@@ -1008,8 +1069,11 @@ class SettingsDialog(tk.Toplevel):
             e.grid(row=row, column=1, padx=10)
             e.bind("<FocusIn>", lambda ev: self._set_active_entry(e, var))
             
+            active_color = COLOR_OK if key == "ok" else COLOR_NG
+            active_fg = "black" if key == "ok" else "white"
+
             # テスト点灯ボタン
-            btn = tk.Button(parent, text="テスト点灯", font=FONT_NORMAL, bg="#546E7A", fg="white", relief="flat")
+            btn = tk.Button(parent, text="テスト点灯", font=FONT_NORMAL, bg="#546E7A", fg="white", relief="flat", padx=6)
             btn.grid(row=row, column=2, padx=5)
             
             # 状態表示(LED)
@@ -1017,24 +1081,39 @@ class SettingsDialog(tk.Toplevel):
             led.grid(row=row, column=3, padx=5)
             circle = led.create_oval(2, 2, 18, 18, fill="#333", outline="#555")
             
-            def _toggle_test(v=var, l=led, c=circle, b=btn):
-                # app_instance 経由で操作
-                app = getattr(self.master, "app_instance", None)
-                if not app: return
-                pin = 0
-                try: pin = int(v.get())
-                except: return
+            def _toggle_test(v=var, l=led, c=circle, b=btn, act_color=active_color, act_fg=active_fg):
+                try:
+                    pin = int(v.get().strip())
+                except (ValueError, TypeError):
+                    return
                 
-                # モック的な直接操作 (本来は hardware.py 経由)
-                # ここでは簡易的に色だけ変えるテスト
                 cur_color = l.itemcget(c, "fill")
-                if cur_color == "#333":
-                    l.itemconfig(c, fill=COLOR_OK)
-                    # 実際の出力をONにする処理が必要ならここ
+                turn_on = (cur_color == "#333")
+
+                app = getattr(self.master, "app_instance", None)
+                if app and hasattr(app, "toggle_output_pin_by_num"):
+                    app.toggle_output_pin_by_num(pin, turn_on)
+                else:
+                    # app 参照がない場合でもモックマネージャー等で状態更新
+                    from .hardware import OutputDevice
+                    if not hasattr(self, "_test_devices"):
+                        self._test_devices = {}
+                    if pin not in self._test_devices:
+                        self._test_devices[pin] = OutputDevice(pin)
+                    if turn_on:
+                        self._test_devices[pin].on()
+                    else:
+                        self._test_devices[pin].off()
+
+                if turn_on:
+                    l.itemconfig(c, fill=act_color)
+                    b.config(bg=act_color, fg=act_fg)
                 else:
                     l.itemconfig(c, fill="#333")
+                    b.config(bg="#546E7A", fg="white")
             
             btn.config(command=_toggle_test)
+            Tooltip(btn, f"{label}の物理/仮想ピンをON/OFFトグル点灯テストします。")
 
         _make_out_row(f_out, "OK出力:", self.v_ok, 0, "ok")
         Tooltip(f_out.grid_slaves(row=0, column=0)[0], "判定OK時にON信号を出す GPIO ピン番号です。")
@@ -2069,22 +2148,63 @@ class SettingsDialog(tk.Toplevel):
         _lbl(r_mdl, "AIモデルパス:",
              "推論に使用するYOLOモデルを指定します。\n"
              "・.pt ファイル: 「.pt参照」ボタンでファイルを選択\n"
-             "・ncnnモデル: 「ncnnフォルダ参照」ボタンでフォルダを選択")
+             "・ncnnモデル: 「ncnnフォルダ参照」ボタンでフォルダを選択\n"
+             "※選択完了後、自動的にモデルがロードされ検出クラスが更新されます。")
         vm = tk.StringVar(value=s.get("model_path", ""))
         _entry_w(r_mdl, vm, width=35)
-        _browse_btn(r_mdl, vm, mode="file",
-                    filetypes=[("PyTorch モデル", "*.pt"), ("すべてのファイル", "*.*")])
+
+        def _on_model_picked(p):
+            if p:
+                vm.set(p)
+                s["model_path"] = p
+                self._load_model_classes_for_path(p, show_feedback=True)
+                self._mark_changed()
+
+        def _pick_pt():
+            p = filedialog.askopenfilename(
+                title="YOLOモデルファイルを選択",
+                parent=self,
+                filetypes=[("PyTorch モデル", "*.pt"), ("すべてのファイル", "*.*")])
+            if p:
+                _on_model_picked(p)
+
+        btn_pt = tk.Button(r_mdl, text=".pt参照", font=FONT_NORMAL,
+                           bg=COLOR_BG_INPUT, fg=COLOR_ACCENT,
+                           relief="flat", padx=6, pady=2, cursor="hand2",
+                           command=_pick_pt)
+        btn_pt.pack(side=tk.LEFT, padx=(6, 0))
+        Tooltip(btn_pt, "PyTorch形式のモデルファイル(*.pt)を選択します (選択完了後、自動ロードされます)")
+
         def _pick_ncnn():
             p = filedialog.askdirectory(title="ncnnモデルフォルダを選択", parent=self)
             if p:
-                vm.set(p)
+                _on_model_picked(p)
+
         btn_ncnn = tk.Button(r_mdl, text="ncnnフォルダ", font=FONT_NORMAL,
                              bg=COLOR_BG_INPUT, fg=COLOR_ACCENT,
                              relief="flat", padx=6, pady=2, cursor="hand2",
                              command=_pick_ncnn)
         btn_ncnn.pack(side=tk.LEFT, padx=(4, 0))
-        Tooltip(btn_ncnn, "ncnn形式のモデルフォルダ(*.ncnnディレクトリ)を選択します")
-        vm.trace_add("write", lambda *a: s.update({"model_path": vm.get()}))
+        Tooltip(btn_ncnn, "ncnn形式のモデルフォルダ(*.ncnnディレクトリ)を選択します (選択完了後、自動ロードされます)")
+
+        # モデルステータス表示行
+        r_mdl_st = tk.Frame(g3, bg=COLOR_BG_PANEL)
+        r_mdl_st.pack(fill=tk.X, pady=(2, 6), padx=10)
+        self.lbl_model_status = tk.Label(r_mdl_st, text="", font=(FONT_FAMILY, 11),
+                                         bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, anchor="w")
+        self.lbl_model_status.pack(fill=tk.X)
+
+        # 初期表示時のモデル情報表示
+        self._load_model_classes_for_path(vm.get(), show_feedback=True)
+
+        def _on_entry_changed(*a):
+            p = vm.get().strip()
+            s["model_path"] = p
+            if os.path.exists(p):
+                self._load_model_classes_for_path(p, show_feedback=True)
+            self._mark_changed()
+
+        vm.trace_add("write", _on_entry_changed)
 
         _section_title(g3, "▼ 容量監視・自動削除")
 
@@ -2645,7 +2765,19 @@ ctl.!default {{
         self.settings.save_settings()
 
         if hasattr(self.master, "app_instance"):
-            self.master.app_instance.reset_delay_pattern_queue()
+            app = self.master.app_instance
+            if hasattr(app, "reset_delay_pattern_queue"):
+                app.reset_delay_pattern_queue()
+            if hasattr(app, "reset_test_outputs"):
+                app.reset_test_outputs()
+
+        if hasattr(self, "_test_devices"):
+            for dev in self._test_devices.values():
+                try:
+                    dev.off()
+                except Exception:
+                    pass
+            self._test_devices.clear()
 
         if hasattr(self, "_live_preview_win") and self._live_preview_win.winfo_exists():
             self._live_preview_win.destroy()

@@ -60,7 +60,7 @@ class SettingsManager:
             "storage": {
                 "results_dir": os.path.join(os.path.expanduser("~"), "results"),
                 "auto_delete_enabled": True,
-                "max_results_gb": round(shutil.disk_usage(os.path.expanduser("~")).total / (1024**3), 1),
+                "max_results_gb": round(max(0.1, (shutil.disk_usage(os.path.expanduser("~")).total / (1024**3)) - 1.0), 1),
                 "capture_res": "1920x1080",
                 "preview_res": "640x480",
                 "res_ok": "320x240",

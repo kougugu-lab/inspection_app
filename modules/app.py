@@ -823,6 +823,52 @@ class InspectionSystem:
         if PYGAME_AVAILABLE and pygame.mixer.get_init():
             pygame.mixer.music.stop()
 
+    def toggle_output_pin_by_num(self, pin: int, turn_on: bool) -> bool:
+        """設定画面からのテスト点灯（物理/仮想ピンのON/OFFトグル切替）"""
+        try:
+            if not hasattr(self, "_test_output_devices"):
+                self._test_output_devices = {}
+
+            target_dev = None
+            for dev in (getattr(self, "out_ok", None), getattr(self, "out_ng", None)):
+                if dev and hasattr(dev, "pin") and str(dev.pin) == str(pin):
+                    target_dev = dev
+                    break
+
+            if target_dev is None:
+                if pin in self._test_output_devices:
+                    target_dev = self._test_output_devices[pin]
+                else:
+                    target_dev = OutputDevice(pin)
+                    self._test_output_devices[pin] = target_dev
+
+            if turn_on:
+                target_dev.on()
+            else:
+                target_dev.off()
+            self.logger.info(f"出力ピン BCM {pin} テスト点灯: {'ON' if turn_on else 'OFF'}")
+            return True
+        except Exception as e:
+            self.logger.error(f"出力ピンテストエラー (BCM {pin}): {e}")
+            return False
+
+    def reset_test_outputs(self):
+        """テスト点灯用に出力したピンをすべて消灯(OFF)にする"""
+        try:
+            if getattr(self, "out_ok", None):
+                self.out_ok.off()
+            if getattr(self, "out_ng", None):
+                self.out_ng.off()
+            if hasattr(self, "_test_output_devices"):
+                for dev in self._test_output_devices.values():
+                    try:
+                        dev.off()
+                    except Exception:
+                        pass
+                self._test_output_devices.clear()
+        except Exception as e:
+            self.logger.error(f"テスト出力リセットエラー: {e}")
+
     def clear_history(self):
         if messagebox.askyesno("確認", "NG履歴を削除しますか？"):
             self.ng_history.clear()
@@ -985,6 +1031,7 @@ class InspectionSystem:
         self.settings_open = False
         self.logger.info("設定画面が閉じられました。検査処理を再開します。")
         self.setup_hardware()
+        self.load_model()
         self.v_mode.set(self.settings.data["inference"].get("mode", "inspection"))
         self.update_commit_display()
         self.update_mode_ui()
@@ -1460,25 +1507,52 @@ class InspectionSystem:
             is_fr = (self.commit_number % 1.0 < 0.25)
             delay_cycles = float(st_sys.get("delay_cycles", 0))
 
-            if is_half_step and not is_fr and getattr(self, 'door_latch_pat_id', None) is not None:
-                # ドアライン Rr 時: Fr 時のパターンをそのまま引き継ぐ（新しくピン読みやキュー消費はしない）
+            if is_half_step and delay_cycles > 0:
+                # --- ドアライン時の0.5単位遅延キュー同期 ---
+                # 各 0.5 サイクル (Fr または Rr) ごとにパターンピンを取得しキューイング・デキュー
+                raw_pat_id = self.get_current_pattern()
+                self.delay_pattern_queue.append(raw_pat_id)
+
+                if self.elapsed_cycles < delay_cycles:
+                    self.cycle_active_pat_id = DELAYED_SKIP_PATTERN_ID
+                    self.cycle_is_delayed_skip = True
+                    self.logger.info(
+                        f"[ドアライン遅延] 蓄積中 ({self.elapsed_cycles:.1f}/{delay_cycles:.1f} サイクル)。"
+                        f" キュー長={len(self.delay_pattern_queue)}"
+                    )
+                else:
+                    applied_pat_id = self.delay_pattern_queue.pop(0) if self.delay_pattern_queue else None
+                    self.cycle_active_pat_id = applied_pat_id
+                    self.cycle_is_delayed_skip = False
+
+                    applied_pat_name = "SKIP"
+                    if applied_pat_id and applied_pat_id in d.get("patterns", {}):
+                        applied_pat_name = d["patterns"][applied_pat_id].get("name", "").strip() or str(applied_pat_id)
+                    elif applied_pat_id:
+                        applied_pat_name = str(applied_pat_id)
+
+                    stage_label = "Fr" if is_fr else "Rr"
+                    self.logger.info(
+                        f"[ドアライン遅延] {stage_label}パターン適用: {applied_pat_name} (ID: {applied_pat_id})。"
+                        f" キュー残={len(self.delay_pattern_queue)}"
+                    )
+                self.door_latch_pat_id = self.cycle_active_pat_id
+
+            elif is_half_step and not is_fr and getattr(self, 'door_latch_pat_id', None) is not None:
+                # ドアライン遅延なし Rr 時: Fr 時のパターンをそのまま引き継ぐ
                 self.cycle_active_pat_id = self.door_latch_pat_id
-                self.cycle_is_delayed_skip = (self.cycle_active_pat_id == DELAYED_SKIP_PATTERN_ID)
+                self.cycle_is_delayed_skip = False
                 self.logger.info(
                     f"[ドアライン] Rrサイクル: Frパターンを引き継ぎ適用 (ID: {self.cycle_active_pat_id})"
                 )
             else:
                 raw_pat_id = self.get_current_pattern()
 
-                # --- 遅延キュー制御 ---
-                # delay_cycles が設定されている場合、パターン情報はキューに積んで
-                # 指定サイクル後に取り出す（仕様情報の保存機能）
+                # --- 通常モードの遅延キュー制御 ---
                 if delay_cycles > 0:
-                    # キューにパターン情報を積む
                     self.delay_pattern_queue.append(raw_pat_id)
 
                     if self.elapsed_cycles < delay_cycles:
-                        # 遅延期間中: キューから消費せず、今サイクルは SKIP 扱い
                         self.cycle_active_pat_id = DELAYED_SKIP_PATTERN_ID
                         self.cycle_is_delayed_skip = True
                         self.logger.info(
@@ -1486,12 +1560,10 @@ class InspectionSystem:
                             f" キュー長={len(self.delay_pattern_queue)}"
                         )
                     else:
-                        # 遅延完了: キューの先頭を取り出して今サイクルに適用
                         applied_pat_id = self.delay_pattern_queue.pop(0) if self.delay_pattern_queue else None
                         self.cycle_active_pat_id = applied_pat_id
                         self.cycle_is_delayed_skip = False
 
-                        # ログ用に設定されたパターン名を取得
                         applied_pat_name = "SKIP"
                         if applied_pat_id and applied_pat_id in d.get("patterns", {}):
                             applied_pat_name = d["patterns"][applied_pat_id].get("name", "").strip() or str(applied_pat_id)
@@ -1503,11 +1575,9 @@ class InspectionSystem:
                             f" キュー残={len(self.delay_pattern_queue)}"
                         )
                 else:
-                    # 遅延なし: そのまま適用
                     self.cycle_active_pat_id = raw_pat_id
                     self.cycle_is_delayed_skip = False
 
-                # ドアライン対応時、Fr時（または通常時）の決定パターンをラッチ保持
                 if is_half_step:
                     self.door_latch_pat_id = self.cycle_active_pat_id
 
