@@ -1,6 +1,6 @@
 # AI 自動検査システム (AI Camera Auto Inspection System)
 
-**バージョン**: 3.5.4
+**バージョン**: 3.5.5
 
 ---
 
