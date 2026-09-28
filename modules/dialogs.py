@@ -47,7 +47,8 @@ except ImportError:
 
 def detect_available_cameras():
     """OSが認識しているカメラデバイスを探索し、
-    [(index_int, display_label_str), ...] のリストを返す。
+    [(index_int, display_label_str, by_path_str), ...] のリストを返す。
+    Linux環境では /dev/v4l/by-path を走査して物理USBポートに永続的に紐付くパスも取得・照合する。
     ※ UIフリーズやブロッキング、警告ログ多発を防ぐため VideoCapture による同期的接続テストは行わない。
     """
     import sys
@@ -57,14 +58,35 @@ def detect_available_cameras():
     devices = []
 
     if sys.platform.startswith("linux"):
-        # Linux (Raspberry Pi 等): /sys/class/video4linux/video*/name を軽量チェック
+        # Linux (Raspberry Pi 等): /dev/v4l/by-path と /sys/class/video4linux/video*/name を照合
         v4l_dir = "/sys/class/video4linux"
+        by_path_dir = "/dev/v4l/by-path"
+
+        # by-path のシンボリックリンク先 (/dev/videoX) から by-path への逆引き辞書を作成
+        by_path_map = {}
+        if os.path.exists(by_path_dir):
+            try:
+                for fname in sorted(os.listdir(by_path_dir)):
+                    full_p = os.path.join(by_path_dir, fname)
+                    try:
+                        real_p = os.path.realpath(full_p)
+                        # video-index0 (主キャプチャノード) を最優先
+                        if "index0" in fname or real_p not in by_path_map:
+                            by_path_map[real_p] = full_p
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         if os.path.exists(v4l_dir):
             ignore_keywords = ["codec", "rpivid", "vc4", "media-controller", "bcm2835-isp", "h264", "hevc", "vp8"]
             for entry in sorted(os.listdir(v4l_dir), key=lambda x: int(x.replace("video", "")) if x.replace("video", "").isdigit() else 999):
                 if entry.startswith("video"):
                     try:
                         idx = int(entry.replace("video", ""))
+                        dev_node = f"/dev/video{idx}"
+                        by_path = by_path_map.get(dev_node, "")
+
                         name_file = os.path.join(v4l_dir, entry, "name")
                         cam_name = f"カメラ {idx}"
                         if os.path.exists(name_file):
@@ -77,7 +99,15 @@ def detect_available_cameras():
                         if any(k in cam_name.lower() for k in ignore_keywords):
                             continue
 
-                        devices.append((idx, f"[{idx}] {cam_name}"))
+                        port_info = ""
+                        if by_path:
+                            # 例: platform-xhci-hcd.0-usb-0:1.3:1.0-video-index0 から USBポート番号を抽出
+                            bname = os.path.basename(by_path)
+                            if "usb-" in bname:
+                                u_part = bname.split("usb-")[-1].split(":")[0]
+                                port_info = f" (Port {u_part})"
+
+                        devices.append((idx, f"[{idx}] {cam_name}{port_info}", by_path))
                     except Exception:
                         pass
     elif sys.platform.startswith("win"):
@@ -93,13 +123,13 @@ def detect_available_cameras():
 
         if names_from_ps:
             for idx, d_name in enumerate(names_from_ps):
-                devices.append((idx, f"[{idx}] {d_name}"))
+                devices.append((idx, f"[{idx}] {d_name}", ""))
 
     # 万が一なにも取れなかった場合、あるいは標準的なインデックス 0～3 を補完
     existing_indices = {d[0] for d in devices}
     for idx in range(4):
         if idx not in existing_indices:
-            devices.append((idx, f"[{idx}] カメラ (インデックス {idx})"))
+            devices.append((idx, f"[{idx}] カメラ (インデックス {idx})", ""))
 
     devices.sort(key=lambda x: x[0])
     return devices
@@ -802,18 +832,33 @@ class SettingsDialog(tk.Toplevel):
                 l_idx = tk.Label(f, text="使用カメラ:", font=FONT_SET_VAL, bg=COLOR_BG_PANEL,
                          fg=COLOR_TEXT_MAIN)
                 l_idx.grid(row=0, column=2)
-                Tooltip(l_idx, "システムに接続されているカメラ機器を選択します。")
+                Tooltip(l_idx, "システムに接続されているカメラ機器を選択します。物理USBポートに永続固定されます。")
 
                 curr_idx = cam_obj.get("index", 0)
-                # 現在のインデックスに対応する表示文字列を探す
+                curr_bypath = cam_obj.get("by_path", "")
+
+                # by_path があれば、現在の実際の /dev/videoX を逆引き解決して優先
+                if curr_bypath and os.path.exists(curr_bypath):
+                    try:
+                        real_p = os.path.realpath(curr_bypath)
+                        bname = os.path.basename(real_p)
+                        if bname.startswith("video") and bname[5:].isdigit():
+                            curr_idx = int(bname[5:])
+                    except Exception:
+                        pass
+
+                # 現在のインデックスまたは by_path に対応する表示文字列を探す
                 init_val = f"[{curr_idx}] カメラ (インデックス {curr_idx})"
-                for c_idx, c_label in self.available_cams:
-                    if c_idx == curr_idx:
+                for dev in self.available_cams:
+                    c_idx = dev[0]
+                    c_label = dev[1]
+                    c_path = dev[2] if len(dev) > 2 else ""
+                    if (curr_bypath and c_path == curr_bypath) or (c_idx == curr_idx):
                         init_val = c_label
                         break
 
                 vi = tk.StringVar(value=init_val)
-                cb_dev = ttk.Combobox(f, textvariable=vi, values=cam_options, font=FONT_SET_VAL, width=28)
+                cb_dev = ttk.Combobox(f, textvariable=vi, values=cam_options, font=FONT_SET_VAL, width=32)
                 cb_dev.grid(row=0, column=3, padx=10)
 
                 def _upd_inner(v_n=vn, v_i=vi):
@@ -830,11 +875,22 @@ class SettingsDialog(tk.Toplevel):
                             parsed_idx = int(sel_text)
                         except ValueError:
                             pass
-                    self.temp_data["cameras"][idx].update({
+
+                    # 選択されたカメラの by_path を特定
+                    matched_bypath = ""
+                    for dev in self.available_cams:
+                        if dev[1] == sel_text or dev[0] == parsed_idx:
+                            matched_bypath = dev[2] if len(dev) > 2 else ""
+                            break
+
+                    cam_dict = {
                         "name": v_n.get(),
                         "index": parsed_idx,
                         "device_name": sel_text
-                    })
+                    }
+                    if matched_bypath:
+                        cam_dict["by_path"] = matched_bypath
+                    self.temp_data["cameras"][idx].update(cam_dict)
                     self._mark_changed()
 
                 vn.trace_add("write", lambda *a: _upd_inner())
@@ -852,12 +908,24 @@ class SettingsDialog(tk.Toplevel):
             _create_cam_row()
 
     def test_camera(self, idx):
-        c_idx_str = self.temp_data["cameras"][idx].get("index", 0)
+        cam_info = self.temp_data["cameras"][idx]
+        c_bypath = cam_info.get("by_path", "")
+        c_idx_str = cam_info.get("index", 0)
         try:
             c_idx = int(c_idx_str)
         except ValueError:
-            messagebox.showerror("エラー", "正しいカメラインデックスを選択してください。")
-            return
+            c_idx = 0
+
+        # Linux で by_path が有効な場合は現在のリアルインデックスを解決
+        if sys.platform.startswith("linux") and c_bypath and os.path.exists(c_bypath):
+            try:
+                real_p = os.path.realpath(c_bypath)
+                bname = os.path.basename(real_p)
+                if bname.startswith("video") and bname[5:].isdigit():
+                    c_idx = int(bname[5:])
+            except Exception:
+                pass
+
         test_win = tk.Toplevel(self)
         test_win.title(f"カメラテスト (インデックス: {c_idx})")
         test_win.geometry("640x480")
@@ -865,7 +933,8 @@ class SettingsDialog(tk.Toplevel):
         test_win.grab_set()
         lbl = tk.Label(test_win, bg="black")
         lbl.pack(fill=tk.BOTH, expand=True)
-        cap = cv2.VideoCapture(c_idx)
+        backend = cv2.CAP_V4L2 if sys.platform.startswith('linux') else cv2.CAP_ANY
+        cap = cv2.VideoCapture(c_idx, backend)
         if cap.isOpened():
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not cap.isOpened():
@@ -897,15 +966,21 @@ class SettingsDialog(tk.Toplevel):
             # 次の空いているインデックスを探す
             used_indices = {c.get("index") for c in self.temp_data["cameras"]}
             next_idx = 0
-            for c_idx, _ in self.available_cams if hasattr(self, "available_cams") else []:
+            next_bypath = ""
+            for dev in (self.available_cams if hasattr(self, "available_cams") else []):
+                c_idx = dev[0]
                 if c_idx not in used_indices:
                     next_idx = c_idx
+                    next_bypath = dev[2] if len(dev) > 2 else ""
                     break
-            self.temp_data["cameras"].append({
+            cam_entry = {
                 "id": f"cam_{int(time.time())}",
                 "name": f"カメラ {next_num}",
                 "index": next_idx
-            })
+            }
+            if next_bypath:
+                cam_entry["by_path"] = next_bypath
+            self.temp_data["cameras"].append(cam_entry)
             self.refresh_cam()
             self._mark_changed()
 
@@ -930,8 +1005,6 @@ class SettingsDialog(tk.Toplevel):
             found_str = ", ".join([f"[{c[0]}]" for c in cams])
             self._scan_status_var.set(f"検出機器: {found_str if cams else 'なし'}")
             self.refresh_cam()
-
-        threading.Thread(target=_do_scan, daemon=True).start()
 
         threading.Thread(target=_do_scan, daemon=True).start()
 
@@ -1169,8 +1242,8 @@ class SettingsDialog(tk.Toplevel):
         # 以前のハイライトを消す的な処理があればここ
 
     def _check_gpio_connection(self):
-        from .hardware import GPIO_AVAILABLE
-        if GPIO_AVAILABLE:
+        from .hardware import is_gpio_available
+        if is_gpio_available():
             self.lbl_gpio_status.config(text="GPIO: 接続済み", fg=COLOR_OK)
         else:
             self.lbl_gpio_status.config(text="GPIO: モック動作中", fg=COLOR_WARNING)
